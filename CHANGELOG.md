@@ -2,6 +2,21 @@
 
 All notable changes to the Leasing automations repo. Newest at the top.
 
+## 2026-08-04 — Fix f-string SyntaxError on Python 3.11 (L1)
+
+- **File(s):** `snap_shot/rebuild.py`
+- **Author:** Alexis Pattison
+
+**Why.** First live GitHub Actions run (nightly, workflow_dispatch, run ID 30950126934) failed at import with `SyntaxError: f-string expression part cannot include a backslash` on line 1361. Python 3.11 (Actions runner) is stricter than Python 3.14 (workspace) about backslashes inside f-string expressions, so the dry-run passed locally but the deployed run couldn't even parse the file.
+
+**What changed.** Hoisted the `\u00b7` (middle dot) unicode escape out of the f-string join expression into intermediate variables (`_mid_dot`, `_tag_join`). No behavior change — the rendered string is byte-identical.
+
+**What did not change.** No workbook output changes. No other f-strings altered. Audited the full file with an AST walk to confirm no other f-string expressions contain backslashes.
+
+**Risk / rollback.** Risk: low, syntactic-only fix. Rollback: revert the commit.
+
+**Verification.** Re-fire the nightly workflow manually via `gh workflow run`. Expect it to progress past the import step and either succeed end-to-end or fail at a later runtime step (which becomes the next thing to debug).
+
 ## 2026-08-04 — Snap Shot rebuild — initial deployment (L4)
 
 - **Commit:** initial commit (see git log)

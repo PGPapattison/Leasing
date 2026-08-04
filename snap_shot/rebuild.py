@@ -1358,7 +1358,9 @@ def write_property_block(ws, start_row, name, address, units, mapping_entry):
         src_tags.append("NEW \u00b7 Broker-only in ClickUp")
     if mapping_entry.get("needs_review"):
         src_tags.append("\u26a0 Needs review")
-    tag_suffix = f"    \u00b7    {' \u00b7 '.join(src_tags)}" if src_tags else ""
+    _mid_dot = "\u00b7"
+    _tag_join = f" {_mid_dot} ".join(src_tags)
+    tag_suffix = f"    {_mid_dot}    {_tag_join}" if src_tags else ""
     prop_id = mapping_entry.get("appfolio_id") or ""
     prop_id_prefix = f"Property ID: {prop_id}    \u00b7    " if prop_id else ""
     cell.value = f"{prop_id_prefix}{address}{tag_suffix}"
