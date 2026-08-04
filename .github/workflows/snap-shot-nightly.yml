@@ -1,0 +1,40 @@
+name: Snap Shot — nightly rebuild
+
+on:
+  schedule:
+    # 4:00 AM ET daily — 08:00 UTC (EDT) / 09:00 UTC (EST).
+    # We schedule for 08:00 UTC year-round; during EST (Nov–Mar) it fires at
+    # 3 AM local instead of 4 AM. Ann has confirmed either is fine.
+    - cron: '0 8 * * *'
+  workflow_dispatch: {}    # manual trigger for testing
+
+concurrency:
+  group: snap-shot
+  cancel-in-progress: false
+
+jobs:
+  rebuild:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: pip install -r snap_shot/requirements.txt
+
+      - name: Rebuild Snap Shot (nightly mode)
+        env:
+          APATTISON_MS_REFRESH_TOKEN: ${{ secrets.APATTISON_MS_REFRESH_TOKEN }}
+          APPFOLIO_API_SECRET: ${{ secrets.APPFOLIO_API_SECRET }}
+          CLICKUP_API_TOKEN: ${{ secrets.CLICKUP_API_TOKEN }}
+          GRAPH_CLIENT_ID: ${{ secrets.GRAPH_CLIENT_ID }}
+          GRAPH_CLIENT_SECRET: ${{ secrets.GRAPH_CLIENT_SECRET }}
+          GRAPH_TENANT_ID: ${{ secrets.GRAPH_TENANT_ID }}
+        run: python snap_shot/rebuild.py --mode=nightly

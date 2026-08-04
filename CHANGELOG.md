@@ -1,0 +1,37 @@
+# CHANGELOG
+
+All notable changes to the Leasing automations repo. Newest at the top.
+
+## 2026-08-04 — Snap Shot rebuild — initial deployment (L4)
+
+- **Commit:** initial commit (see git log)
+- **File(s):** `snap_shot/rebuild.py`, `snap_shot/requirements.txt`, `.github/workflows/snap-shot-nightly.yml`, `.github/workflows/snap-shot-weekly.yml`, `.github/workflows/snap-shot-poll.yml`, `README.md`
+- **Author:** Alexis Pattison
+- **Skill:** `prudent-snap-shot-rebuild` v1.0 (Alexis's personal skill library, skill_id `3fbd202a-03c3-4b3b-a379-3e93c29b661b`)
+
+**Why.** Ann's Leasing Snap Shot workbook was a manual weekly rebuild. She wanted an always-fresh version she could edit directly, without losing her hand-authored notes (Deal Activity, Property Flags, Vacant Callouts, Ann's Commentary, Broker Calls, Market Rent overrides, per-unit Notes) on each refresh. This automation rebuilds nightly from AppFolio + ClickUp Broker Reporting data, round-tripping through SharePoint to preserve Ann's edits.
+
+**What changed.** New repo (previously empty). Added:
+
+- `snap_shot/rebuild.py` — 1,781-line standalone Python script; four modes (`nightly`, `weekly`, `poll`, `dry-run`); pulls AppFolio `rent_roll.json`, ClickUp Broker Reporting list 901114227189, downloads and re-uploads the SharePoint workbook at `sites/DBMigration/Shared Documents/General/Brain Snap Shot/Leasing-Snap-Shot.xlsx`; race-skip if file modified within last 15 minutes by a non-automation user.
+- `snap_shot/requirements.txt` — `openpyxl`, `requests`, `msal`.
+- Three GitHub Actions workflows: nightly (4 AM ET daily), weekly (5 AM ET Mondays, refreshes Broker Active Interest from Broker Beat attachments), poll (every 15 min 7 AM–6 PM ET Mon–Fri, rebuilds if ClickUp checkbox is checked).
+- `README.md` documenting the repo and required secrets.
+
+**What did not change.**
+
+- Workbook layout, colors, fonts, KPI banner, and lowest-occupancy-states section are byte-identical to the prototype Ann approved. Dry-run confirmed pixel-identical rendering.
+- No changes to any other Prudent Growth automation or ClickUp workflow.
+- No AppFolio writes — read-only.
+- No ClickUp field changes yet — the "Rebuild Snap Shot" checkbox custom field on list 901114227189 still needs to be added manually (or the poll workflow will exit 0 with a "checkbox field not found" log line each run — safe, not destructive).
+
+**Risk / rollback.**
+
+- Risk: **medium** — new automation with three schedules. Failure modes: SharePoint upload fails (script logs + emails Alexis); AppFolio API 429 (script sleeps + retries once); ClickUp API down (weekly mode's Broker Active Interest refresh degrades to prior week's values).
+- Rollback: disable the three workflows (`gh workflow disable snap-shot-nightly.yml` etc.) or delete the `.github/workflows/*.yml` files. Rebuild.py can also be invoked manually with `--mode=dry-run` for local testing without any external writes.
+
+**Verification.**
+
+- Dry-run tested in-session on 2026-08-04: `python3 snap_shot/rebuild.py --mode=dry-run` completes with a workbook at `/tmp/Leasing-Snap-Shot-dryrun.xlsx`; comparing that against the prior prototype via PDF export shows pixel-identical layout, colors, KPI banner, and per-property blocks. Only numeric drift is expected (live AppFolio data between two consecutive pulls).
+- First live run: nightly cron fires 2026-08-05 08:00 UTC (4 AM ET). Alexis will spot-check the SharePoint workbook that morning. If Ann's edits from the previous evening are preserved after that first run, the round-trip is verified.
+- Monitor first week: check GitHub Actions run history at https://github.com/PGPapattison/Leasing/actions each morning through 2026-08-11.
