@@ -1,0 +1,15 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+
+# Local test artifacts
+*.xlsx
+*.log
+.DS_Store
+
+# Editor
+.vscode/
+.idea/
