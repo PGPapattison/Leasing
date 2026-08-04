@@ -1,0 +1,5 @@
+{
+  "_comment": "Ann's freehand per-unit notes. Keyed by OccupancyId (for leased units) or UnitId (for vacant units). Preserved across refreshes — never overwritten by AppFolio or ClickUp. Any edits Ann makes to the Notes column in SharePoint get read back into this file before the next rebuild.",
+  "1721": "Renewal conversation started 7/15 — Pediatricz confirmed they want to extend but asked about TI for exam-room build-out. Follow up week of 8/10.",
+  "1311": "Ernest Imade toured 7/21 for restaurant/lounge concept — waiting on GT financials. Contractor walk 8/1."
+}

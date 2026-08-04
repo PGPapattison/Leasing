@@ -93,13 +93,25 @@ except Exception:  # pragma: no cover - zoneinfo is stdlib on 3.9+
 # Configuration
 # ══════════════════════════════════════════════════════════════════════════
 
-WORKSPACE_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(
-    os.path.abspath(__file__)
-))))  # .../workspace (skills/prudent-snap-shot-rebuild/scripts/rebuild.py -> workspace)
+_SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 
 # Data files this script reads as-is (per brief — reuse, do not regenerate).
-# Resolved relative to the workspace root but overridable via env for testing.
-DATA_DIR = os.environ.get("SNAP_SHOT_DATA_DIR", WORKSPACE_DIR)
+# Resolution order:
+#   1. SNAP_SHOT_DATA_DIR env var (explicit override, used in tests / CI)
+#   2. snap_shot/data/ next to this script (the shipped repo layout)
+#   3. ../../../.. from this script (legacy workspace layout, kept for local dev
+#      inside the original skills/prudent-snap-shot-rebuild/scripts/ tree)
+_DATA_CANDIDATES = [
+    os.environ.get("SNAP_SHOT_DATA_DIR"),
+    os.path.join(_SCRIPT_DIR, "data"),
+    os.path.dirname(os.path.dirname(os.path.dirname(_SCRIPT_DIR))),
+]
+DATA_DIR = next(
+    (p for p in _DATA_CANDIDATES
+     if p and os.path.exists(os.path.join(p, "property_mapping_all73.json"))),
+    _DATA_CANDIDATES[1],  # default so error messages point somewhere
+)
+WORKSPACE_DIR = DATA_DIR  # kept for callers that reference it
 
 MAPPING_PATH = os.path.join(DATA_DIR, "property_mapping_all73.json")
 BROKER_CONTACTS_PATH = os.path.join(DATA_DIR, "broker_contacts_by_property.json")
