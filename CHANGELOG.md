@@ -2,6 +2,23 @@
 
 All notable changes to the Leasing automations repo. Newest at the top.
 
+## 2026-08-04 — Fix f-string SyntaxError on Python 3.11, part 2 (L1)
+
+- **File(s):** `snap_shot/rebuild.py`
+- **Author:** Alexis Pattison
+
+**Why.** Second live nightly run (30950269822) failed at import with the same `SyntaxError: f-string expression part cannot include a backslash` — different site, line 1400. The first fix used an AST walk to hunt for issues, but `ast.parse()` runs the Python 3.14 tokenizer which normalizes string escapes before the walk sees them, hiding backslashes inside string-literal `.join()` arguments. Result: the AST audit missed line 1400.
+
+**What changed.**
+- Line 1400: same middle-dot hoisting treatment as line 1361 (extract `\u00b7` into a variable outside the f-string).
+- Replaced the AST audit approach with a raw-source regex scan and `ast.parse(feature_version=(3,11))` — both now report clean.
+
+**What did not change.** Rendered string still byte-identical. No workbook output changes.
+
+**Risk / rollback.** Risk: low, syntactic-only fix. Rollback: revert the commit.
+
+**Verification.** Re-fire nightly workflow. Should progress past import. If it fails at a later runtime step (Graph auth, ClickUp query, SharePoint write) that becomes the next thing to debug.
+
 ## 2026-08-04 — Fix f-string SyntaxError on Python 3.11 (L1)
 
 - **File(s):** `snap_shot/rebuild.py`
@@ -11,7 +28,7 @@ All notable changes to the Leasing automations repo. Newest at the top.
 
 **What changed.** Hoisted the `\u00b7` (middle dot) unicode escape out of the f-string join expression into intermediate variables (`_mid_dot`, `_tag_join`). No behavior change — the rendered string is byte-identical.
 
-**What did not change.** No workbook output changes. No other f-strings altered. Audited the full file with an AST walk to confirm no other f-string expressions contain backslashes.
+**What did not change.** No workbook output changes. No other f-strings altered. Audited the full file with an AST walk to confirm no other f-string expressions contain backslashes. (This audit later proved insufficient — see the follow-up entry above.)
 
 **Risk / rollback.** Risk: low, syntactic-only fix. Rollback: revert the commit.
 

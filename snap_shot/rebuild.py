@@ -1397,7 +1397,9 @@ def write_property_block(ws, start_row, name, address, units, mapping_entry):
             line = f"{line} ({co})" if line else f"({co})"
         bits = [x for x in (cell_phone, email) if x]
         if bits:
-            line = f"{line} \u00b7 {' \u00b7 '.join(bits)}" if line else " \u00b7 ".join(bits)
+            _mid = "\u00b7"
+            _joined_bits = f" {_mid} ".join(bits)
+            line = f"{line} {_mid} {_joined_bits}" if line else _joined_bits
         if line:
             broker_lines.append(line)
     broker_str = "  ;  ".join(broker_lines)
