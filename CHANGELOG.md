@@ -2,6 +2,40 @@
 
 All notable changes to the Leasing automations repo. Newest at the top.
 
+## 2026-08-05 — First successful end-to-end run + add Pillow for logo (L1)
+
+- **File(s):** `snap_shot/requirements.txt`
+- **Author:** Alexis Pattison
+
+**Why.** After yesterday's auth debugging (see follow-up entry below), the workflow now runs green end-to-end on Jerry's shared `PrudentGrowth Email Automation` app registration (client `d4aec1ec-...`, tenant `b2a05ba0-...`). Run 31010581786 succeeded in 10 seconds: pulled 1060 AppFolio units into 84 properties, wrote 72 broker-managed properties with 905 unit rows, and uploaded `Leasing-Snap-Shot.xlsx` to SharePoint. Only cosmetic issue: `Logo image skipped: You must install Pillow to fetch image objects` — the workbook shipped without the PG logo because Pillow wasn't listed in requirements.
+
+**What changed.** Added `Pillow>=10.0` to `snap_shot/requirements.txt`.
+
+**What did not change.** No code changes. Auth stack unchanged. Workbook logic unchanged.
+
+**Risk / rollback.** Risk: none. Adding an image library. Rollback: revert this commit; workbook will lose the logo again.
+
+**Verification.** Re-fire nightly. Expect the same 10‑second run, but with no `Pillow` warning in the log and the PG logo visible on the workbook cover sheet in SharePoint.
+
+## 2026-08-05 — Reset Graph auth to Jerry's shared app registration (L2)
+
+- **File(s):** `.github/workflows/snap-shot-*.yml`, GitHub secrets (deleted GRAPH_CLIENT_ID, GRAPH_CLIENT_SECRET, GRAPH_TENANT_ID)
+- **Author:** Alexis Pattison
+
+**Why.** Yesterday I stood up a brand-new Azure app registration to power Snap Shot Graph auth. It never worked — kept returning `AADSTS65001: not consented` despite both user and admin consent flows. After Alexis's GitHub connected to the `PrudentGrowth` org, I could read the working `PrudentGrowth/delinquency` scripts and found the pattern: every existing PG automation uses the same shared app (`PrudentGrowth Email Automation`, client `d4aec1ec-...`, tenant `b2a05ba0-...`) with a public‑client refresh‑token flow (no client secret). Our `rebuild.py` was already coded for exactly that pattern — the mismatch was that yesterday's GitHub secrets pointed at Alexis's custom app instead.
+
+**What changed.**
+- Removed `GRAPH_CLIENT_ID`, `GRAPH_CLIENT_SECRET`, `GRAPH_TENANT_ID` env passthroughs from all three workflows (they were never read anyway).
+- Deleted those three secrets from the GitHub Secrets store.
+- Regenerated `APATTISON_MS_REFRESH_TOKEN` against the shared PG app via a new helper (`get_refresh_token_v2.py`, not committed — personal helper).
+- Extended app scopes with `Files.ReadWrite.All` and `Sites.ReadWrite.All` (Jerry's app previously only had `Mail.Send`); admin‑consented at the tenant level.
+
+**What did not change.** No `rebuild.py` changes. Auth code was already correct.
+
+**Risk / rollback.** Risk: low. Rollback: re-add the three deleted secrets and re-add the env lines to the workflows if Jerry ever revokes tenant‑wide access on the shared app.
+
+**Verification.** Manual run 31010581786 completed successfully in 10 seconds with SharePoint upload confirmed.
+
 ## 2026-08-04 — Fix f-string SyntaxError on Python 3.11, part 2 (L1)
 
 - **File(s):** `snap_shot/rebuild.py`
