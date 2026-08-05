@@ -2,6 +2,29 @@
 
 All notable changes to the Leasing automations repo. Newest at the top.
 
+## 2026-08-05 — List description: overwrite instead of splice (L1)
+
+- **File(s):** `snap_shot/rebuild.py`
+- **Author:** Alexis Pattison
+
+**Why.** Alexis: "when you pin the last update in the description of the lease, can you delete the last post and just copy over so we dont end up having a long string on the list description?" — the splice-and-preserve behavior was risking a growing list description over time (each run kept the below-divider content and layered the block on top). She wants the list description to always be just the current refresh link — nothing else.
+
+**What changed.**
+- `update_broker_reporting_list_description()` now overwrites the entire list description with just the refresh block (`📄 **Latest Snap Shot workbook:** [Open in Excel Online](...) / _Last refreshed ..._`). No divider, no preserved history.
+- Task description behavior unchanged — it still splices into the existing description because the control task has real workflow docs below the auto-managed block.
+
+**What did not change.**
+- Control task description: still uses splice logic (preserves workflow docs).
+- Refresh block format itself.
+- Link source (Graph webUrl → Excel Online).
+
+**Risk / rollback.**
+- Risk: low. If someone manually adds content to the list description, the next rebuild wipes it. That's the requested behavior. If she ever wants list-level docs, they should live on the pinned control task instead.
+- Rollback: revert this commit.
+
+**Verification.**
+- Fire nightly with `force_rebuild=true`. Confirm list description shows ONLY the refresh block, no prior content or dividers.
+
 ## 2026-08-05 — Right-size note rows (drop 4-line floor + wrap safety margin) (L1)
 
 - **File(s):** `snap_shot/rebuild.py`

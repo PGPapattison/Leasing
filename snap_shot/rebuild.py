@@ -582,17 +582,17 @@ def _splice_refresh_block(current_md, new_block):
 
 def update_broker_reporting_list_description(sharepoint_url, mode):
     """Update the Broker Reporting LIST description with the SharePoint link.
-    Preserves whatever list-level docs exist below the auto-managed section.
-    Non-fatal."""
-    try:
-        list_data = cu_get_list(BROKER_REPORTING_LIST_ID)
-    except Exception as e:  # noqa: BLE001
-        LOG.warning(f"Could not fetch broker reporting list description: {e}")
-        return
-    current_md = list_data.get("markdown_content") or list_data.get("content") or ""
+
+    OVERWRITE strategy (not splice): the list description is REPLACED entirely
+    with just the refresh block. No divider, no preserved history, no growing
+    string — Alexis wants the list description to always show ONLY the current
+    refresh link, nothing else. Task description (below) keeps splice behavior
+    because it has real workflow docs.
+
+    Non-fatal.
+    """
     block = _build_refresh_section(sharepoint_url, mode)
-    new_md = _splice_refresh_block(current_md, block)
-    ok = cu_update_list_description(BROKER_REPORTING_LIST_ID, new_md)
+    ok = cu_update_list_description(BROKER_REPORTING_LIST_ID, block)
     if ok:
         LOG.info(f"Updated Broker Reporting list {BROKER_REPORTING_LIST_ID} description with refresh link.")
     else:
