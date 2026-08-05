@@ -2,6 +2,35 @@
 
 All notable changes to the Leasing automations repo. Newest at the top.
 
+## 2026-08-05 — Stamp ClickUp control task with SharePoint link on each rebuild (L2)
+
+- **File(s):** `snap_shot/rebuild.py`
+- **Author:** Alexis Pattison
+
+**Why.** Alexis requested that after every successful rebuild, the SharePoint link to the fresh workbook be pasted into the description of the pinned ClickUp control task (`868km8qph`, "SNAP SHOT REBUILD — check to refresh"). This gives the team a one-click link to the latest copy without navigating SharePoint.
+
+**What changed.**
+- Added `WORKBOOK_WEB_URL` constant built from `SHAREPOINT_FOLDER_PATH` + `WORKBOOK_FILENAME` (URL-encoded per RFC 3986).
+- Added `cu_update_task_description(task_id, markdown_description)` helper wrapping `PUT /task/{id}` with `markdown_content` payload.
+- Added `update_control_task_with_refresh_link(sharepoint_url, mode)` helper that:
+  - Finds the control task via `find_control_task()`.
+  - Fetches the current markdown description.
+  - Rewrites (or prepends on first run) a marked-off "Latest Snap Shot" section between `<!-- SNAP_SHOT_LAST_REFRESH_BEGIN -->` and `<!-- SNAP_SHOT_LAST_REFRESH_END -->` markers. Preserves the rest of the description (workflow docs, troubleshooting, etc.) verbatim.
+  - Includes: SharePoint link, refresh timestamp, and rebuild mode (nightly/weekly/poll).
+- Wired into `run_build` as "Step 7" after the SharePoint upload. Wrapped in try/except so a ClickUp description update failure never fails the rebuild itself (workbook is already live at that point).
+
+**What did not change.**
+- SharePoint folder path, filename, upload logic.
+- The rest of the control task description — workflow docs, troubleshooting steps, etc.
+- Any other note-row / column / formatting behavior.
+
+**Risk / rollback.**
+- Risk: low. Description update is non-fatal; failures are logged as warnings and the rebuild still succeeds. On first run against a description that doesn't have the markers, the new section is prepended (not replacing anything).
+- Rollback: revert this commit. The existing description will regain any content between markers on the next rebuild if the markers still exist, or you can manually edit them out.
+
+**Verification.**
+- Fire the nightly. Confirm the control task description now has a "Latest Snap Shot" section at the top with a clickable link, and the rest of the docs are intact below.
+
 ## 2026-08-05 — Unfreeze top rows + let per-unit Notes rows auto-grow live (L2)
 
 - **File(s):** `snap_shot/rebuild.py`

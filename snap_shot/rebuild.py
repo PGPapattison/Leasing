@@ -170,6 +170,17 @@ SHAREPOINT_FOLDER_PATH = os.environ.get(
 WORKBOOK_FILENAME = os.environ.get("SNAP_SHOT_FILENAME", "Leasing-Snap-Shot.xlsx")
 SHAREPOINT_ITEM_PATH = f"{SHAREPOINT_FOLDER_PATH}/{WORKBOOK_FILENAME}"
 
+# Public SharePoint web URL for the workbook (opens in Excel Online in the
+# browser). Used to stamp the ClickUp control-task description after each
+# successful rebuild so the team always has a one-click link to the latest
+# copy. The URL is constructed from the resolved SharePoint folder path plus
+# workbook filename — URL-encoded per RFC 3986.
+import urllib.parse
+WORKBOOK_WEB_URL = (
+    "https://prudentgrowthnc.sharepoint.com/sites/DBMigration/Shared%20Documents/"
+    + urllib.parse.quote(f"{SHAREPOINT_FOLDER_PATH}/{WORKBOOK_FILENAME}", safe="/")
+)
+
 # The automation's own identity as it appears in Graph's lastModifiedBy.user.
 # Used to distinguish "the bot just saved this" from "a human just edited this".
 AUTOMATION_ACCOUNT_EMAIL = os.environ.get(
