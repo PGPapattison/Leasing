@@ -1657,7 +1657,18 @@ def write_property_block(ws, start_row, name, address, units, mapping_entry):
         # Ensure row is tall enough for whichever cell wraps to more lines.
         label_lines = max(1, -(-len(label) // LABEL_CHARS_PER_LINE))
         effective_min_lines = max(min_lines, label_lines)
-        ws.row_dimensions[row].height = _row_height_for(val, min_lines=effective_min_lines)
+        row_h = _row_height_for(val, min_lines=effective_min_lines)
+        # Live-typing headroom: merged cells don't auto-fit in Excel, so if
+        # someone types more after the rebuild, the row won't grow until the
+        # next nightly. Pad the height by ~40% (with a floor of 2 extra
+        # lines) whenever there's real content so borderline additions still
+        # fit without clipping. Empty rows are unaffected (row_h == 18).
+        # Broker Active Interest is refreshed weekly so it gets the same
+        # headroom in case Ann adds a note between weekly refreshes.
+        if has_real_content:
+            padded = row_h * 1.4
+            row_h = min(max(padded, row_h + 30), 409)  # +2 lines minimum, cap at Excel max
+        ws.row_dimensions[row].height = row_h
         label_cell = ws[f"B{row}"]
         label_cell.value = label
         label_cell.fill = fill(GRAY_LIGHT)

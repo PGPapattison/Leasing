@@ -2,6 +2,29 @@
 
 All notable changes to the Leasing automations repo. Newest at the top.
 
+## 2026-08-05 — Add live-typing headroom to Deal Activity / Ann's Commentary / BAI rows (L1)
+
+- **File(s):** `snap_shot/rebuild.py`
+- **Author:** Alexis Pattison
+
+**Why.** After collapsing empty note rows, Alexis asked whether populated rows would auto-grow if more text is typed between rebuilds. Answer: no — those cells are merged (col C through last col) and Excel's auto-fit doesn't work on merged cells. Solution: over-provision the height whenever content is present so mid-day additions still fit without clipping. Next nightly recalculates exactly.
+
+**What changed.**
+- After the estimator computes `row_h` for a note row with real content, multiply by 1.4 (with a floor of +30pt / ~2 extra lines, capped at Excel's 409pt max). Applied to Deal Activity, Ann's Commentary, Broker Active Interest, Property Flags, Broker Calls.
+- Empty rows unaffected — they still collapse to 18pt.
+
+**What did not change.**
+- Estimator logic itself (chars_per_line, line_height, semicolon-line counting).
+- Per-unit Notes rows — those are unmerged and Excel auto-fits them live.
+- Any other formatting.
+
+**Risk / rollback.**
+- Risk: low. Rows are visibly taller when populated. Cap at 409pt prevents any absurd growth.
+- Rollback: revert this commit.
+
+**Verification.**
+- Fire nightly with `force_rebuild=true`. Confirm populated Deal Activity / Ann's Commentary rows have visible whitespace below the text.
+
 ## 2026-08-05 — Collapse empty Deal Activity/Ann's Commentary rows + write link to LIST description too (L2)
 
 - **File(s):** `snap_shot/rebuild.py`
