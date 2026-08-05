@@ -2,6 +2,40 @@
 
 All notable changes to the Leasing automations repo. Newest at the top.
 
+## 2026-08-05 — Clean ClickUp description format, use Excel Online URL, trim row headroom (L2)
+
+- **File(s):** `snap_shot/rebuild.py`
+- **Author:** Alexis Pattison
+
+**Why.** Three follow-ups after seeing the description live in ClickUp:
+1. HTML-comment markers (`<!-- SNAP_SHOT_LAST_REFRESH_BEGIN -->`) were rendering as literal text — ClickUp doesn't strip HTML comments.
+2. The link was a direct file URL that triggered desktop Excel; Alexis wants it to open in Excel Online in the browser.
+3. 40% row-height padding on note rows was too aggressive — rows looked visibly puffy.
+
+**What changed.**
+- Removed HTML-comment markers entirely. New format detects the auto-managed block by its content signature (`📄 **Latest Snap Shot workbook:**` header + `_Last refreshed ..._` italic footer).
+- Cleanup regex sweeps legacy HTML-comment markers AND the bold-italic "auto-managed by Snap Shot rebuild" markers from any previous version on the first run.
+- New rendered format:
+  ```
+  📄 **Latest Snap Shot workbook:** [Open in Excel Online](…)
+
+  _Last refreshed 2026-08-05 12:15 PM ET · nightly rebuild_
+  ```
+- Link source: use Graph API's `webUrl` from the upload response instead of the constructed `Shared Documents/...` URL. Graph returns the `_layouts/15/Doc.aspx?sourcedoc={GUID}&action=default` URL which opens in Excel Online.
+- Row headroom: dropped from `row_h * 1.4` (min +30pt) to a fixed `+15pt` for note rows with content. Enough for a small mid-day addition without visible puffiness.
+
+**What did not change.**
+- Location of the link (list description at top + control task description).
+- Per-unit Notes auto-fit — those cells are unmerged and Excel handles auto-fit natively.
+- Rest of description content — the workflow docs below the auto-managed section stay intact.
+
+**Risk / rollback.**
+- Risk: low. Splice tested against 4 scenarios (empty description, legacy HTML-comment format, current format, plain-text original). All round-trip cleanly.
+- Rollback: revert this commit.
+
+**Verification.**
+- Fire nightly with `force_rebuild=true`. Confirm the ClickUp description shows clean formatted markdown (no visible marker text) and the link opens in Excel Online.
+
 ## 2026-08-05 — Add live-typing headroom to Deal Activity / Ann's Commentary / BAI rows (L1)
 
 - **File(s):** `snap_shot/rebuild.py`

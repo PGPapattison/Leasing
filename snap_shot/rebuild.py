@@ -498,11 +498,12 @@ def cu_update_task_description(task_id, markdown_description):
     return True
 
 
-# Marker strings that bracket the auto-managed "Last refresh" section at the
-# top of the control task's description. Only content BETWEEN these markers
-# gets rewritten each run — the workflow docs below are preserved verbatim.
-LAST_REFRESH_BEGIN = "<!-- SNAP_SHOT_LAST_REFRESH_BEGIN -->"
-LAST_REFRESH_END = "<!-- SNAP_SHOT_LAST_REFRESH_END -->"
+# The auto-managed refresh section at the top of ClickUp descriptions.
+# ClickUp doesn't strip HTML comments, so we can't use invisible markers.
+# Instead, we detect the block by its content signature (the emoji header +
+# "Last refreshed" italic line) and replace the whole block each run.
+REFRESH_HEADER_SIGNATURE = "\U0001F4C4 **Latest Snap Shot workbook:**"
+REFRESH_FOOTER_SIGNATURE = "_Last refreshed "
 
 
 def cu_update_list_description(list_id, markdown_content):
@@ -535,36 +536,62 @@ def cu_get_list(list_id):
     return r.json()
 
 
+def _build_refresh_section(sharepoint_url, mode):
+    """Return the markdown block for the auto-managed refresh section.
+    Formatted for clean rendering in ClickUp — no HTML comments, no leaked
+    marker text."""
+    ts = now_et().strftime("%Y-%m-%d %I:%M %p ET").lstrip("0").replace(" 0", " ")
+    return (
+        f"{REFRESH_HEADER_SIGNATURE} [Open in Excel Online]({sharepoint_url})\n\n"
+        f"{REFRESH_FOOTER_SIGNATURE}{ts} · {mode} rebuild_"
+    )
+
+
+def _splice_refresh_block(current_md, new_block):
+    """Insert or replace the auto-managed refresh block in `current_md`.
+    Detects the existing block by its content signature (emoji header and
+    italic "Last refreshed" line). Cleans up any legacy markers from earlier
+    versions of the code."""
+    import re
+
+    # Clean up any leftover markers from earlier versions of this code:
+    # (1) HTML-comment markers.
+    # (2) The bold-italic "auto-managed by Snap Shot rebuild" markers.
+    # (3) Any leftover "### 📄 Latest Snap Shot" headers with stale block.
+    legacy_patterns = [
+        r"<!-- SNAP_SHOT_LAST_REFRESH_BEGIN -->.*?<!-- SNAP_SHOT_LAST_REFRESH_END -->",
+        r"\*\*\*— auto-managed by Snap Shot rebuild.*?— end auto-managed section —\*\*\*",
+        r"### \U0001F4C4 Latest Snap Shot\s*\n\s*\*\*\[Open [^\]]+\]\([^)]+\)\*\*\s*\n\s*\*Last refreshed[^*]+\*",
+    ]
+    for lp in legacy_patterns:
+        current_md = re.sub(lp, "", current_md, flags=re.DOTALL).strip()
+
+    # Detect and replace the current-format block.
+    current_pattern = re.compile(
+        re.escape(REFRESH_HEADER_SIGNATURE) + r".*?" + re.escape(REFRESH_FOOTER_SIGNATURE) + r"[^_]*_",
+        re.DOTALL,
+    )
+    if current_pattern.search(current_md):
+        return current_pattern.sub(new_block, current_md, count=1).strip()
+
+    # First install: prepend to existing description.
+    if current_md:
+        return f"{new_block}\n\n---\n\n{current_md}"
+    return new_block
+
+
 def update_broker_reporting_list_description(sharepoint_url, mode):
     """Update the Broker Reporting LIST description with the SharePoint link.
-    Same marker-block pattern as the task-description updater — preserves
-    whatever list-level docs exist below the auto-managed section. Non-fatal."""
+    Preserves whatever list-level docs exist below the auto-managed section.
+    Non-fatal."""
     try:
         list_data = cu_get_list(BROKER_REPORTING_LIST_ID)
     except Exception as e:  # noqa: BLE001
         LOG.warning(f"Could not fetch broker reporting list description: {e}")
         return
     current_md = list_data.get("markdown_content") or list_data.get("content") or ""
-
-    ts = now_et().strftime("%Y-%m-%d %I:%M %p ET").lstrip("0").replace(" 0", " ")
-    new_section = (
-        f"{LAST_REFRESH_BEGIN}\n"
-        f"### \U0001F4C4 Latest Snap Shot\n\n"
-        f"**[Open Leasing-Snap-Shot.xlsx]({sharepoint_url})**\n\n"
-        f"*Last refreshed: {ts} ({mode} rebuild)*\n"
-        f"{LAST_REFRESH_END}"
-    )
-
-    if LAST_REFRESH_BEGIN in current_md and LAST_REFRESH_END in current_md:
-        import re
-        pattern = re.compile(
-            re.escape(LAST_REFRESH_BEGIN) + r".*?" + re.escape(LAST_REFRESH_END),
-            re.DOTALL,
-        )
-        new_md = pattern.sub(new_section, current_md, count=1)
-    else:
-        new_md = new_section + "\n\n" + current_md.lstrip()
-
+    block = _build_refresh_section(sharepoint_url, mode)
+    new_md = _splice_refresh_block(current_md, block)
     ok = cu_update_list_description(BROKER_REPORTING_LIST_ID, new_md)
     if ok:
         LOG.info(f"Updated Broker Reporting list {BROKER_REPORTING_LIST_ID} description with refresh link.")
@@ -595,29 +622,8 @@ def update_control_task_with_refresh_link(sharepoint_url, mode):
         LOG.warning(f"Could not fetch control task {control_task['id']} description: {e}")
         return
     current_md = full.get("markdown_description") or full.get("description") or ""
-
-    ts = now_et().strftime("%Y-%m-%d %I:%M %p ET").lstrip("0").replace(" 0", " ")
-    new_section = (
-        f"{LAST_REFRESH_BEGIN}\n"
-        f"### \U0001F4C4 Latest Snap Shot\n\n"
-        f"**[Open Leasing-Snap-Shot.xlsx]({sharepoint_url})**\n\n"
-        f"*Last refreshed: {ts} ({mode} rebuild)*\n"
-        f"{LAST_REFRESH_END}"
-    )
-
-    # Replace existing marked-off block if present; otherwise prepend.
-    if LAST_REFRESH_BEGIN in current_md and LAST_REFRESH_END in current_md:
-        import re
-        pattern = re.compile(
-            re.escape(LAST_REFRESH_BEGIN) + r".*?" + re.escape(LAST_REFRESH_END),
-            re.DOTALL,
-        )
-        new_md = pattern.sub(new_section, current_md, count=1)
-    else:
-        # First-time install: prepend the section (with a blank line separator)
-        # in front of the existing description.
-        new_md = new_section + "\n\n" + current_md.lstrip()
-
+    block = _build_refresh_section(sharepoint_url, mode)
+    new_md = _splice_refresh_block(current_md, block)
     ok = cu_update_task_description(control_task["id"], new_md)
     if ok:
         LOG.info(f"Updated control task {control_task['id']} description with refresh link.")
@@ -1660,14 +1666,11 @@ def write_property_block(ws, start_row, name, address, units, mapping_entry):
         row_h = _row_height_for(val, min_lines=effective_min_lines)
         # Live-typing headroom: merged cells don't auto-fit in Excel, so if
         # someone types more after the rebuild, the row won't grow until the
-        # next nightly. Pad the height by ~40% (with a floor of 2 extra
-        # lines) whenever there's real content so borderline additions still
-        # fit without clipping. Empty rows are unaffected (row_h == 18).
-        # Broker Active Interest is refreshed weekly so it gets the same
-        # headroom in case Ann adds a note between weekly refreshes.
+        # next nightly. Add a modest fixed buffer (~1 extra line, +15pt)
+        # when there's real content — enough for a small mid-day addition
+        # without making rows visibly puffy. Empty rows unaffected.
         if has_real_content:
-            padded = row_h * 1.4
-            row_h = min(max(padded, row_h + 30), 409)  # +2 lines minimum, cap at Excel max
+            row_h = min(row_h + 15, 409)
         ws.row_dimensions[row].height = row_h
         label_cell = ws[f"B{row}"]
         label_cell.value = label
@@ -1959,22 +1962,27 @@ def run_build(mode, dry_run):
 
     # Step 6: upload to SharePoint (skip entirely for dry-run).
     if not dry_run:
-        upload_to_sharepoint(output_path)
+        upload_result = upload_to_sharepoint(output_path) or {}
         LOG.info(f"Uploaded {output_path} to SharePoint as {WORKBOOK_FILENAME}.")
+
+        # Prefer Graph's `webUrl` — that's the "_layouts/15/Doc.aspx?..."
+        # link that opens in Excel Online in the browser (rather than a
+        # direct file URL that triggers desktop Excel).
+        sharepoint_link = upload_result.get("webUrl") or WORKBOOK_WEB_URL
 
         # Step 7: stamp the ClickUp Broker Reporting LIST description with
         # the SharePoint link. This is what Alexis wants pinned at the top
         # of the list so anyone opening the ClickUp view sees the link
         # first. Non-fatal — workbook is already live.
         try:
-            update_broker_reporting_list_description(WORKBOOK_WEB_URL, mode)
+            update_broker_reporting_list_description(sharepoint_link, mode)
         except Exception as e:  # noqa: BLE001
             LOG.warning(f"Failed to update ClickUp list description: {e}")
 
         # Step 7b: also stamp the pinned control task description, for
         # visibility inside the task view itself. Non-fatal.
         try:
-            update_control_task_with_refresh_link(WORKBOOK_WEB_URL, mode)
+            update_control_task_with_refresh_link(sharepoint_link, mode)
         except Exception as e:  # noqa: BLE001
             LOG.warning(f"Failed to update ClickUp control task description: {e}")
 
