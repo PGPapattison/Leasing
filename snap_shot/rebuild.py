@@ -1428,11 +1428,28 @@ def write_property_block(ws, start_row, name, address, units, mapping_entry):
         ("Ann's Commentary", notes.get("ann_commentary", "")),
     ]
 
-    # Row-height estimator. `chars_per_line` should match the effective width of
-    # the merged value column (C..LAST_COL) at 9pt Calibri; measurements show
-    # ~85 chars per visible line in this workbook layout. Explicit newlines
-    # (\n) and semicolon-delimited items each get their own line.
-    def _row_height_for(text, min_lines=1, chars_per_line=85, max_height=280):
+    # Row-height estimator for ANY note row (Broker/Contact, Broker Calls,
+    # Property Flags, Vacant Callouts, Deal Activity, Broker Active Interest,
+    # Ann's Commentary). We deliberately over-estimate rather than under: users
+    # would rather see a slightly tall row than a clipped one. All value cells
+    # use wrap_text=True and vertical=top so any extra vertical space just
+    # renders as trailing whitespace, not misalignment.
+    #
+    # Openpyxl's auto-fit on merged cells is unreliable, so we compute a
+    # generous manual height. Values:
+    #   chars_per_line = 72  (measured column can fit ~85 chars at 9pt Calibri
+    #                         with narrow letters; using 72 leaves headroom for
+    #                         property blocks where content skews wider).
+    #   line_height    = 15pt (was 14 — matches 9pt Calibri single-line height
+    #                          with slight breathing room, avoiding the
+    #                          descender-clipping some rows showed).
+    #   safety_margin  = 1 extra line for anything with visible content, so a
+    #                    borderline case that wraps to N+1 lines in Excel
+    #                    doesn't clip.
+    #   max_height     = 409pt (Excel's absolute per-row maximum). We used to
+    #                    cap at 110pt then 280pt; both clipped long notes.
+    def _row_height_for(text, min_lines=1, chars_per_line=72,
+                         line_height=15, safety_margin=1, max_height=409):
         if not text and min_lines <= 1:
             return 18
         text = text or ""
@@ -1445,8 +1462,12 @@ def write_property_block(ws, start_row, name, address, units, mapping_entry):
         # Add extra lines for semicolon-delimited items (common in Broker
         # Active Interest and Deal Activity where each item is on its own line).
         wrapped_lines += text.count(";")
+        # Safety margin: add 1 extra line whenever there is content, so
+        # borderline wraps don't clip.
+        if text.strip():
+            wrapped_lines += safety_margin
         wrapped_lines = max(min_lines, wrapped_lines)
-        return min(18 + (wrapped_lines - 1) * 14, max_height)
+        return min(18 + (wrapped_lines - 1) * line_height, max_height)
 
     label_min_lines = {
         "Deal Activity": 4,

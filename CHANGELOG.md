@@ -2,7 +2,33 @@
 
 All notable changes to the Leasing automations repo. Newest at the top.
 
-## 2026-08-05 — Fix Broker Active Interest row height clipping content (L1)
+## 2026-08-05 — Make every note row expand to fit content, never clip (L1)
+
+- **File(s):** `snap_shot/rebuild.py`
+- **Author:** Alexis Pattison
+
+**Why.** First pass at fixing Broker Active Interest clipping (chars_per_line 145->85, max_height 110->280) fixed the reported case but Alexis flagged the general problem: if Property Flags, Vacant Callouts, Deal Activity, or any other note grows long, it should also auto-expand to show all text. Since the row-height estimator is shared across ALL note rows, the safer fix is to make the estimator lean generous — users would rather see a slightly tall row than a clipped one.
+
+**What changed.**
+- `chars_per_line` 85 -> 72 (deliberately narrower than measured width, so borderline wraps have headroom).
+- `line_height` 14pt -> 15pt (matches 9pt Calibri single-line height with breathing room, avoids descender-clipping seen on a couple of rows).
+- Added `safety_margin=1` extra line for any row with visible content: if Excel actually wraps to N+1 lines instead of N, no clipping.
+- `max_height` 280pt -> 409pt (Excel's absolute per-row max). Only used by unusually long notes.
+- Added extensive inline comments so future authors understand the estimator's rationale.
+
+**What did not change.**
+- The estimator is still applied to every note row via the same `for label, val in note_labels:` loop, so this fix universally covers Broker/Contact, Broker Calls, Property Flags, Vacant Callouts, Deal Activity, Broker Active Interest, and Ann's Commentary.
+- `wrap_text=True` and `vertical=top` still set on every value cell.
+- No column widths, layouts, or other formatting.
+
+**Risk / rollback.**
+- Risk: rows will average taller than before. Empty rows still get the 18pt floor; single-line rows get roughly the same height. Only rows with real content grow.
+- Rollback: revert this commit + the earlier 145->85 commit to restore the original 145 / 14 / 110 estimator.
+
+**Verification.**
+- Fire nightly. Open the workbook and spot-check property blocks that were clipping earlier (Broker Active Interest on any active leasing property; Property Flags on a property with a long flag list). All text should now be visible.
+
+## 2026-08-05 — Fix Broker Active Interest row height clipping content (L1) [SUPERSEDED]
 
 - **File(s):** `snap_shot/rebuild.py`
 - **Author:** Alexis Pattison
@@ -19,12 +45,9 @@ All notable changes to the Leasing automations repo. Newest at the top.
 - Other note rows (Deal Activity, Ann's Commentary, etc.) also benefit from the tighter estimate but keep their existing `min_lines` floors.
 - No changes to workbook layout, columns, or any other formatting.
 
-**Risk / rollback.**
-- Risk: low. Rows may be slightly taller than before across all property blocks (mostly visible on the ones with longer notes). If any property block now feels overly tall, tune `chars_per_line` up (e.g. 90-95) or `max_height` down.
-- Rollback: revert this commit.
+**Risk / rollback.** [SUPERSEDED by the next commit — the 85/280 values were still too tight for edge cases; see above for the final values.]
 
-**Verification.**
-- Fire nightly. Open the workbook at WORKING DOCS/Leasing-Snap-Shot.xlsx and confirm the Broker Active Interest row on properties with long content now shows all text without clipping.
+**Verification.** See above.
 
 ## 2026-08-05 — First successful end-to-end run + add Pillow for logo (L1)
 
