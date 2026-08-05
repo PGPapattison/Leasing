@@ -38,20 +38,23 @@ jobs:
           print(f"Downloaded {len(content)} bytes")
 
           wb = load_workbook("/tmp/wb.xlsx")
-          for sn in wb.sheetnames[:5]:
+          for sn in wb.sheetnames:
               ws = wb[sn]
               print(f"\n=== Sheet: {sn} ===")
-              # Look for 'Broker Active Interest' rows
-              for row in range(1, min(ws.max_row+1, 300)):
+              hits = 0
+              for row in range(1, ws.max_row+1):
                   bval = ws.cell(row=row, column=2).value
-                  if bval and 'Broker Active Interest' in str(bval):
+                  if bval and 'Broker Active Interest' in str(bval) and hits < 3:
                       cval = ws.cell(row=row, column=3).value
                       cell_c = ws.cell(row=row, column=3)
                       rh = ws.row_dimensions[row].height
                       wrap = cell_c.alignment.wrap_text if cell_c.alignment else None
                       valign = cell_c.alignment.vertical if cell_c.alignment else None
-                      print(f"  row {row}: rh={rh} wrap={wrap} vertical={valign}")
-                      print(f"    value ({len(cval or '')} chars): {repr(cval)[:200]}")
+                      print(f"\n  row {row}: rh={rh} wrap={wrap} vertical={valign}")
+                      print(f"    label = {repr(bval)}")
+                      print(f"    value ({len(cval or '')} chars): {repr(cval)}")
+                      hits += 1
+                  if hits >= 3:
                       break
           PY
       - uses: actions/upload-artifact@v4
