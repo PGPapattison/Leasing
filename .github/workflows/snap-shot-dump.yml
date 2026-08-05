@@ -11,13 +11,15 @@ jobs:
       - uses: actions/setup-python@v5
         with: { python-version: '3.11' }
       - name: Install deps
-        run: pip install requests openpyxl
-      - name: Download and inspect
+        run: pip install -r snap_shot/requirements.txt
+      - name: Download and dump BAI extract
         env:
           APATTISON_MS_REFRESH_TOKEN: ${{ secrets.APATTISON_MS_REFRESH_TOKEN }}
         run: |
           python3 <<'PY'
-          import os, requests, json
+          import os, sys, requests
+          sys.path.insert(0, "snap_shot")
+          from rebuild import extract_ann_edits
           from openpyxl import load_workbook
 
           r = requests.post(
@@ -34,30 +36,23 @@ jobs:
           PATH = "General/_Prudent Growth Operations, LLC/LEASING & ASSET MANAGEMENT/WORKING DOCS/Leasing-Snap-Shot.xlsx"
           meta = requests.get(f"https://graph.microsoft.com/v1.0/drives/{DRIVE}/root:/{PATH}", headers=H).json()
           content = requests.get(f"https://graph.microsoft.com/v1.0/drives/{DRIVE}/items/{meta['id']}/content", headers=H).content
-          open("/tmp/wb.xlsx","wb").write(content)
           print(f"Downloaded {len(content)} bytes")
 
-          wb = load_workbook("/tmp/wb.xlsx")
-          for sn in wb.sheetnames:
-              ws = wb[sn]
-              print(f"\n=== Sheet: {sn} ===")
-              hits = 0
-              for row in range(1, ws.max_row+1):
-                  bval = ws.cell(row=row, column=2).value
-                  if bval and 'Broker Active Interest' in str(bval) and hits < 3:
-                      cval = ws.cell(row=row, column=3).value
-                      cell_c = ws.cell(row=row, column=3)
-                      rh = ws.row_dimensions[row].height
-                      wrap = cell_c.alignment.wrap_text if cell_c.alignment else None
-                      valign = cell_c.alignment.vertical if cell_c.alignment else None
-                      print(f"\n  row {row}: rh={rh} wrap={wrap} vertical={valign}")
-                      print(f"    label = {repr(bval)}")
-                      print(f"    value ({len(cval or '')} chars): {repr(cval)}")
-                      hits += 1
-                  if hits >= 3:
-                      break
+          overrides, unit_notes, mr = extract_ann_edits(content)
+          print(f"\nExtracted {len(overrides)} property overrides, {len(unit_notes)} unit notes.")
+          bai_count = 0
+          bai_populated = 0
+          samples = []
+          for pid, entry in overrides.items():
+              notes = entry.get("_notes", {})
+              bai = notes.get("broker_active_interest", "")
+              bai_count += 1
+              if bai and "awaiting weekly Broker Beat" not in bai:
+                  bai_populated += 1
+                  if len(samples) < 3:
+                      samples.append((pid, entry.get("_property_name", "?"), bai))
+          print(f"BAI keys total: {bai_count}, non-placeholder: {bai_populated}")
+          for pid, pname, bai in samples:
+              print(f"\n  PropertyId {pid}: {pname}")
+              print(f"    BAI ({len(bai)} chars): {repr(bai)}")
           PY
-      - uses: actions/upload-artifact@v4
-        with:
-          name: workbook
-          path: /tmp/wb.xlsx
