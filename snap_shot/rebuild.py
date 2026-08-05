@@ -1327,7 +1327,11 @@ def build_workbook(mapping, rent_roll_by_property, property_overrides,
 
     LOG.info(f"Workbook build: wrote {total_props} properties, {total_units} total unit rows.")
 
-    ws.freeze_panes = "A12"
+    # Frozen panes intentionally removed 2026-08-05 per Alexis — the previous
+    # freeze at A12 limited what could be seen while scrolling through a single
+    # property block. Individual property blocks are already visually bounded
+    # by their headers and borders, so a freeze isn't needed for orientation.
+    # ws.freeze_panes = "A12"  # DISABLED
 
     ws.page_setup.orientation = ws.ORIENTATION_LANDSCAPE
     ws.page_setup.paperSize = ws.PAPERSIZE_LETTER
@@ -1549,12 +1553,28 @@ def write_property_block(ws, start_row, name, address, units, mapping_entry):
             note_key = str(u.get("OccupancyId") or u.get("UnitId") or "")
             unit_note = unit_notes.get(note_key, "") if note_key else ""
 
-            if unit_note:
+            # Unit-row height strategy (Excel auto-fit behavior):
+            #   * If we do NOT set row_dimensions[row].height, Excel auto-fits
+            #     the row height based on wrapped content on OPEN. Users can
+            #     also type into the Notes cell after the rebuild and Excel
+            #     will grow the row live (as long as wrap_text=True is set on
+            #     the cell, which we do below).
+            #   * If we DO set an explicit height, Excel treats it as a hard
+            #     lock and stops auto-growing when the user edits.
+            #
+            # So: only set an explicit height when the incoming note is
+            # already tall enough to REQUIRE more than one line's worth of
+            # space (i.e., the extraction saw a real multi-line note). Empty
+            # notes and short single-line notes get NO explicit height, so
+            # Excel auto-fits and continues to auto-fit as Ann types.
+            if unit_note and len(unit_note) > 30:
+                # Prime the height so the initial view already shows the full
+                # note without user interaction. No cap — the row can grow as
+                # tall as content requires (Excel max is 409pt).
                 note_lines = max(1, -(-len(unit_note) // 30))
                 note_lines += unit_note.count("\n")
-                ws.row_dimensions[row].height = min(17 + (note_lines - 1) * 14, 120)
-            else:
-                ws.row_dimensions[row].height = 17
+                ws.row_dimensions[row].height = min(17 + (note_lines - 1) * 14, 409)
+            # else: leave row_dimensions[row].height unset so Excel auto-fits.
 
             lease_to = parse_date(u.get("LeaseTo"))
             row_fill = None

@@ -2,6 +2,35 @@
 
 All notable changes to the Leasing automations repo. Newest at the top.
 
+## 2026-08-05 — Unfreeze top rows + let per-unit Notes rows auto-grow live (L2)
+
+- **File(s):** `snap_shot/rebuild.py`
+- **Author:** Alexis Pattison
+
+**Why.** Two workflow improvements Alexis requested after using the workbook:
+1. The frozen panes at `A12` locked the top 11 rows visible while scrolling, which limited how much of a property block Ann and the team could see at once. There's no meaningful benefit to the freeze because each property block is already visually bounded by its own header.
+2. When Ann or the team types into a per-unit Notes cell, the row height was NOT growing. It was fixed at 17pt for empty notes and capped at 120pt for prefilled notes. Anything longer got clipped until the user manually resized. She wants the row to auto-grow as she types.
+
+**What changed.**
+- **Freeze panes disabled.** `ws.freeze_panes = "A12"` commented out. Scrolling now shows the full workbook without a locked top area.
+- **Per-unit Notes rows now auto-grow.** Root cause: openpyxl was writing an explicit `row_dimensions[row].height` for every unit row (17pt empty, 17-120pt for prefilled notes). Excel treats any explicit height as a hard lock and disables auto-fit — so when the user typed a long note, the row would clip instead of growing.
+  - New behavior: only set an explicit row height when the incoming prefilled note is already >30 chars (so the initial view isn't clipped). Empty notes and short notes get NO explicit height, so Excel auto-fits on open AND continues to auto-fit as the user types.
+  - Removed the 120pt cap. Row height can now grow up to Excel's 409pt max.
+  - Notes cell already had `wrap_text=True` + `vertical="top"`, which is what triggers Excel's auto-fit — no cell-level changes needed.
+
+**What did not change.**
+- Property-block note rows (Broker Calls, Deal Activity, Property Flags, Vacant Callouts, Ann's Commentary, Broker Active Interest) still use the pre-computed estimator because those cells are MERGED (C..LAST_COL) and Excel auto-fit is unreliable on merged cells.
+- All other formatting: colors, borders, column widths, font, logo, etc.
+- Ann-authored edit preservation still works: `extract_ann_edits` still pulls the current SharePoint file's per-unit notes and rewrites them into the new build.
+
+**Risk / rollback.**
+- Risk: low. If Excel auto-fit behaves unexpectedly on any user's setup, we can restore the explicit heights by reverting the `if unit_note and len(unit_note) > 30:` block.
+- Rollback: revert this commit.
+
+**Verification.**
+- Open the workbook after the next nightly. Confirm (a) the top rows are no longer frozen, (b) type a long note into any per-unit Notes cell and confirm the row grows to fit as you type.
+- REM / VA impact: none. This is a workflow improvement for editors, transparent to consumers.
+
 ## 2026-08-05 — Make every note row expand to fit content, never clip (L1)
 
 - **File(s):** `snap_shot/rebuild.py`
