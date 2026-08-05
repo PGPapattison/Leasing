@@ -467,6 +467,86 @@ def cu_post_comment(task_id, text):
         LOG.warning(f"ClickUp comment post failed on task {task_id}: HTTP {r.status_code}: {r.text[:300]}")
 
 
+def cu_update_task_description(task_id, markdown_description):
+    """Update a task's description via `PUT /task/{id}`. ClickUp's API accepts
+    `markdown_content` (which triggers markdown parsing) or `description`
+    (plain text). We use markdown_content so the SharePoint link renders as a
+    clickable link."""
+    r = http_request(
+        "PUT", f"{CU_BASE}/task/{task_id}",
+        context=f"ClickUp update description on {task_id}",
+        headers=cu_headers(),
+        json={"markdown_content": markdown_description},
+    )
+    if r.status_code not in (200, 201):
+        LOG.warning(
+            f"ClickUp update description failed on task {task_id}: "
+            f"HTTP {r.status_code}: {r.text[:300]}"
+        )
+        return False
+    return True
+
+
+# Marker strings that bracket the auto-managed "Last refresh" section at the
+# top of the control task's description. Only content BETWEEN these markers
+# gets rewritten each run — the workflow docs below are preserved verbatim.
+LAST_REFRESH_BEGIN = "<!-- SNAP_SHOT_LAST_REFRESH_BEGIN -->"
+LAST_REFRESH_END = "<!-- SNAP_SHOT_LAST_REFRESH_END -->"
+
+
+def update_control_task_with_refresh_link(sharepoint_url, mode):
+    """After a successful rebuild + upload, rewrite the auto-managed "Last
+    refresh" section at the top of the control task's description with the
+    SharePoint link and timestamp.
+
+    Safe to call from any mode (nightly, weekly, poll). Non-fatal on failure
+    — the rebuild itself already succeeded and shipped the file; failing to
+    update the ClickUp description should never cause the run to fail.
+    """
+    try:
+        control_task = find_control_task()
+    except Exception as e:  # noqa: BLE001
+        LOG.warning(f"Could not find control task to update description: {e}")
+        return
+
+    # Fetch current description via GET — the list-search response only has
+    # `text_content`, we need the raw markdown.
+    try:
+        full = cu_get_task(control_task["id"], include_attachments=False)
+    except Exception as e:  # noqa: BLE001
+        LOG.warning(f"Could not fetch control task {control_task['id']} description: {e}")
+        return
+    current_md = full.get("markdown_description") or full.get("description") or ""
+
+    ts = now_et().strftime("%Y-%m-%d %I:%M %p ET").lstrip("0").replace(" 0", " ")
+    new_section = (
+        f"{LAST_REFRESH_BEGIN}\n"
+        f"### \U0001F4C4 Latest Snap Shot\n\n"
+        f"**[Open Leasing-Snap-Shot.xlsx]({sharepoint_url})**\n\n"
+        f"*Last refreshed: {ts} ({mode} rebuild)*\n"
+        f"{LAST_REFRESH_END}"
+    )
+
+    # Replace existing marked-off block if present; otherwise prepend.
+    if LAST_REFRESH_BEGIN in current_md and LAST_REFRESH_END in current_md:
+        import re
+        pattern = re.compile(
+            re.escape(LAST_REFRESH_BEGIN) + r".*?" + re.escape(LAST_REFRESH_END),
+            re.DOTALL,
+        )
+        new_md = pattern.sub(new_section, current_md, count=1)
+    else:
+        # First-time install: prepend the section (with a blank line separator)
+        # in front of the existing description.
+        new_md = new_section + "\n\n" + current_md.lstrip()
+
+    ok = cu_update_task_description(control_task["id"], new_md)
+    if ok:
+        LOG.info(f"Updated control task {control_task['id']} description with refresh link.")
+    else:
+        LOG.warning(f"Control task description update did not succeed on {control_task['id']}.")
+
+
 def cu_search_tasks_by_name(list_id, name_query, include_closed="true"):
     """Find tasks in a list whose name matches name_query (case-insensitive
     substring). Used to locate the control task without hardcoding its id."""
@@ -1783,6 +1863,14 @@ def run_build(mode, dry_run):
     if not dry_run:
         upload_to_sharepoint(output_path)
         LOG.info(f"Uploaded {output_path} to SharePoint as {WORKBOOK_FILENAME}.")
+
+        # Step 7: stamp the ClickUp control task with the SharePoint link.
+        # Non-fatal — the workbook is already live; ClickUp description update
+        # failures shouldn't fail the run.
+        try:
+            update_control_task_with_refresh_link(WORKBOOK_WEB_URL, mode)
+        except Exception as e:  # noqa: BLE001
+            LOG.warning(f"Failed to update ClickUp control task description: {e}")
 
     return output_path
 

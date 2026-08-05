@@ -1,0 +1,53 @@
+name: Snap Shot — dump for diagnosis
+
+on:
+  workflow_dispatch:
+
+jobs:
+  dump:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: '3.11' }
+      - name: Install deps
+        run: pip install requests openpyxl
+      - name: Check SharePoint file state
+        env:
+          APATTISON_MS_REFRESH_TOKEN: ${{ secrets.APATTISON_MS_REFRESH_TOKEN }}
+        run: |
+          python3 <<'PY'
+          import os, requests, json
+          from openpyxl import load_workbook
+
+          r = requests.post(
+              "https://login.microsoftonline.com/b2a05ba0-a5ea-4518-8560-c9d2b631798d/oauth2/v2.0/token",
+              data={
+                  "client_id": "d4aec1ec-50cc-46ee-b17e-dddedb03513b",
+                  "grant_type": "refresh_token",
+                  "refresh_token": os.environ["APATTISON_MS_REFRESH_TOKEN"],
+                  "scope": "https://graph.microsoft.com/.default offline_access",
+              })
+          tok = r.json()["access_token"]
+          H = {"Authorization": f"Bearer {tok}"}
+          DRIVE = "b!pZNbE8crqEyv_uELcpbZMu7drhCzjelCqcwMMrJZLTSYJfXQhQnGRo9Sea2xcjR0"
+          PATH = "General/_Prudent Growth Operations, LLC/LEASING & ASSET MANAGEMENT/WORKING DOCS/Leasing-Snap-Shot.xlsx"
+          meta = requests.get(f"https://graph.microsoft.com/v1.0/drives/{DRIVE}/root:/{PATH}", headers=H).json()
+
+          print(f"File name: {meta.get('name')}")
+          print(f"Size: {meta.get('size'):,} bytes")
+          print(f"Last modified: {meta.get('lastModifiedDateTime')}")
+          print(f"Last modified by: {(meta.get('lastModifiedBy') or {}).get('user', {})}")
+          print(f"Created: {meta.get('createdDateTime')}")
+          print(f"Web URL: {meta.get('webUrl')}")
+
+          content = requests.get(f"https://graph.microsoft.com/v1.0/drives/{DRIVE}/items/{meta['id']}/content", headers=H).content
+          open("/tmp/wb.xlsx","wb").write(content)
+          wb = load_workbook("/tmp/wb.xlsx")
+          ws = wb.active
+          print(f"\nActive sheet: {ws.title}")
+          print(f"freeze_panes: {ws.freeze_panes!r}")
+          for sn in wb.sheetnames[:3]:
+              w = wb[sn]
+              print(f"  Sheet '{sn}' freeze_panes: {w.freeze_panes!r}")
+          PY
