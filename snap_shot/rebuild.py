@@ -1475,15 +1475,27 @@ def write_property_block(ws, start_row, name, address, units, mapping_entry):
         "Broker Active Interest from Weekly Reporting": 2,
     }
 
+    # Column B is width 20 (see COL_WIDTHS). At 9pt bold Calibri, ~17 chars
+    # per visible line. Compute the label's own line count and use it as a
+    # floor for the row height, since the label now wraps too.
+    LABEL_CHARS_PER_LINE = 17
+
     for label, val in note_labels:
         is_default_bai = (label == "Broker Active Interest from Weekly Reporting" and val == default_bai)
         min_lines = label_min_lines.get(label, 1)
-        ws.row_dimensions[row].height = _row_height_for(val, min_lines=min_lines)
+        # Ensure row is tall enough for whichever cell wraps to more lines.
+        label_lines = max(1, -(-len(label) // LABEL_CHARS_PER_LINE))
+        effective_min_lines = max(min_lines, label_lines)
+        ws.row_dimensions[row].height = _row_height_for(val, min_lines=effective_min_lines)
         label_cell = ws[f"B{row}"]
         label_cell.value = label
         label_cell.fill = fill(GRAY_LIGHT)
         label_cell.font = Font(name=FONT_NAME, size=9, bold=True, color=NAVY_DEEP)
-        label_cell.alignment = Alignment(horizontal="left", vertical="center", indent=1)
+        # wrap_text=True so long labels like "Broker Active Interest from
+        # Weekly Reporting" wrap inside the narrow column B instead of
+        # visually clipping. The row height is already sized for the value
+        # cell, which is always >= what the label needs.
+        label_cell.alignment = Alignment(horizontal="left", vertical="center", wrap_text=True, indent=1)
         label_cell.border = BOX_BORDER
 
         ws.merge_cells(f"C{row}:{LAST_COL}{row}")
