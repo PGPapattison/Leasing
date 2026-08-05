@@ -2,6 +2,33 @@
 
 All notable changes to the Leasing automations repo. Newest at the top.
 
+## 2026-08-05 — Collapse empty Deal Activity/Ann's Commentary rows + write link to LIST description too (L2)
+
+- **File(s):** `snap_shot/rebuild.py`
+- **Author:** Alexis Pattison
+
+**Why.** Alexis flagged two follow-ups after the initial ClickUp-link + row-height changes:
+1. Empty Deal Activity and Ann's Commentary rows were still ~68pt tall (min_lines=4), which looked wasteful when no content was in them.
+2. The SharePoint link was landing on the pinned CONTROL TASK's description, not on the LIST description at the top of the Broker Reporting list (where the whole team sees it first).
+
+**What changed.**
+- Row-height calc: when the value cell is empty/whitespace (or just the BAI placeholder text), skip the `label_min_lines` floor for that row. Empty rows now collapse to just what the label needs (~17pt). Rows with real content still use `min_lines=4` for Deal Activity / Ann's Commentary so wrap fidelity is preserved when content is present.
+- Added `cu_get_list(list_id)` and `cu_update_list_description(list_id, markdown_content)` helpers wrapping `GET/PUT /list/{id}`.
+- Added `update_broker_reporting_list_description(sharepoint_url, mode)` that rewrites a marked-off "Latest Snap Shot" section at the top of the Broker Reporting list description (list `901114227189`), same marker-block pattern as the task-description updater.
+- Wired into `run_build` as Step 7 (LIST update) with the existing task-description update kept as Step 7b for redundancy. Both non-fatal.
+
+**What did not change.**
+- Rows with real Deal Activity or Ann's Commentary content still wrap the same as before.
+- Rest of the list description / task description — workflow docs stay verbatim below the auto-managed section.
+- SharePoint folder path, filename, upload logic.
+
+**Risk / rollback.**
+- Risk: low. Both updates are non-fatal on failure. Row-height change only affects empty note rows.
+- Rollback: revert this commit.
+
+**Verification.**
+- Fire nightly with `force_rebuild=true`. Confirm empty Deal Activity/Ann's Commentary rows are much shorter, and both the list description AND control task description have a "Latest Snap Shot" section at the top.
+
 ## 2026-08-05 — Stamp ClickUp control task with SharePoint link on each rebuild (L2)
 
 - **File(s):** `snap_shot/rebuild.py`

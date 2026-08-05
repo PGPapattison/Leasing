@@ -505,6 +505,73 @@ LAST_REFRESH_BEGIN = "<!-- SNAP_SHOT_LAST_REFRESH_BEGIN -->"
 LAST_REFRESH_END = "<!-- SNAP_SHOT_LAST_REFRESH_END -->"
 
 
+def cu_update_list_description(list_id, markdown_content):
+    """Update a ClickUp LIST's description via PUT /list/{list_id}. Uses
+    `markdown_content` so the SharePoint link renders as a clickable link.
+    Non-fatal on failure."""
+    r = http_request(
+        "PUT", f"{CU_BASE}/list/{list_id}",
+        context=f"ClickUp update list description on {list_id}",
+        headers=cu_headers(),
+        json={"markdown_content": markdown_content},
+    )
+    if r.status_code not in (200, 201):
+        LOG.warning(
+            f"ClickUp update list description failed on list {list_id}: "
+            f"HTTP {r.status_code}: {r.text[:300]}"
+        )
+        return False
+    return True
+
+
+def cu_get_list(list_id):
+    """Fetch a ClickUp list including its description."""
+    r = http_request(
+        "GET", f"{CU_BASE}/list/{list_id}",
+        context=f"ClickUp get list {list_id}",
+        headers=cu_headers(),
+    )
+    r.raise_for_status()
+    return r.json()
+
+
+def update_broker_reporting_list_description(sharepoint_url, mode):
+    """Update the Broker Reporting LIST description with the SharePoint link.
+    Same marker-block pattern as the task-description updater — preserves
+    whatever list-level docs exist below the auto-managed section. Non-fatal."""
+    try:
+        list_data = cu_get_list(BROKER_REPORTING_LIST_ID)
+    except Exception as e:  # noqa: BLE001
+        LOG.warning(f"Could not fetch broker reporting list description: {e}")
+        return
+    current_md = list_data.get("markdown_content") or list_data.get("content") or ""
+
+    ts = now_et().strftime("%Y-%m-%d %I:%M %p ET").lstrip("0").replace(" 0", " ")
+    new_section = (
+        f"{LAST_REFRESH_BEGIN}\n"
+        f"### \U0001F4C4 Latest Snap Shot\n\n"
+        f"**[Open Leasing-Snap-Shot.xlsx]({sharepoint_url})**\n\n"
+        f"*Last refreshed: {ts} ({mode} rebuild)*\n"
+        f"{LAST_REFRESH_END}"
+    )
+
+    if LAST_REFRESH_BEGIN in current_md and LAST_REFRESH_END in current_md:
+        import re
+        pattern = re.compile(
+            re.escape(LAST_REFRESH_BEGIN) + r".*?" + re.escape(LAST_REFRESH_END),
+            re.DOTALL,
+        )
+        new_md = pattern.sub(new_section, current_md, count=1)
+    else:
+        new_md = new_section + "\n\n" + current_md.lstrip()
+
+    ok = cu_update_list_description(BROKER_REPORTING_LIST_ID, new_md)
+    if ok:
+        LOG.info(f"Updated Broker Reporting list {BROKER_REPORTING_LIST_ID} description with refresh link.")
+    else:
+        LOG.warning(f"Broker Reporting list description update did not succeed on {BROKER_REPORTING_LIST_ID}.")
+
+
 def update_control_task_with_refresh_link(sharepoint_url, mode):
     """After a successful rebuild + upload, rewrite the auto-managed "Last
     refresh" section at the top of the control task's description with the
@@ -1577,7 +1644,16 @@ def write_property_block(ws, start_row, name, address, units, mapping_entry):
 
     for label, val in note_labels:
         is_default_bai = (label == "Broker Active Interest from Weekly Reporting" and val == default_bai)
-        min_lines = label_min_lines.get(label, 1)
+        # When the value cell is EMPTY (or just the BAI placeholder), skip the
+        # tall min_lines floor entirely — the row should collapse to just what
+        # the label needs, not 4 blank lines. Alexis flagged that empty Deal
+        # Activity and Ann's Commentary rows were taking up a lot of vertical
+        # space with no content.
+        has_real_content = bool((val or "").strip()) and not is_default_bai
+        if has_real_content:
+            min_lines = label_min_lines.get(label, 1)
+        else:
+            min_lines = 1
         # Ensure row is tall enough for whichever cell wraps to more lines.
         label_lines = max(1, -(-len(label) // LABEL_CHARS_PER_LINE))
         effective_min_lines = max(min_lines, label_lines)
@@ -1875,9 +1951,17 @@ def run_build(mode, dry_run):
         upload_to_sharepoint(output_path)
         LOG.info(f"Uploaded {output_path} to SharePoint as {WORKBOOK_FILENAME}.")
 
-        # Step 7: stamp the ClickUp control task with the SharePoint link.
-        # Non-fatal — the workbook is already live; ClickUp description update
-        # failures shouldn't fail the run.
+        # Step 7: stamp the ClickUp Broker Reporting LIST description with
+        # the SharePoint link. This is what Alexis wants pinned at the top
+        # of the list so anyone opening the ClickUp view sees the link
+        # first. Non-fatal — workbook is already live.
+        try:
+            update_broker_reporting_list_description(WORKBOOK_WEB_URL, mode)
+        except Exception as e:  # noqa: BLE001
+            LOG.warning(f"Failed to update ClickUp list description: {e}")
+
+        # Step 7b: also stamp the pinned control task description, for
+        # visibility inside the task view itself. Non-fatal.
         try:
             update_control_task_with_refresh_link(WORKBOOK_WEB_URL, mode)
         except Exception as e:  # noqa: BLE001
