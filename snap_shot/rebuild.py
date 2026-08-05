@@ -1428,17 +1428,30 @@ def write_property_block(ws, start_row, name, address, units, mapping_entry):
         ("Ann's Commentary", notes.get("ann_commentary", "")),
     ]
 
-    def _row_height_for(text, min_lines=1):
+    # Row-height estimator. `chars_per_line` should match the effective width of
+    # the merged value column (C..LAST_COL) at 9pt Calibri; measurements show
+    # ~85 chars per visible line in this workbook layout. Explicit newlines
+    # (\n) and semicolon-delimited items each get their own line.
+    def _row_height_for(text, min_lines=1, chars_per_line=85, max_height=280):
         if not text and min_lines <= 1:
             return 18
         text = text or ""
-        lines = max(min_lines, -(-len(text) // 145))
-        lines += text.count(";")
-        return min(18 + (lines - 1) * 14, 110)
+        # Count wrapped lines: split on any explicit newline, then
+        # ceil(segment_len / chars_per_line) each.
+        segments = text.replace("\r\n", "\n").split("\n") or [""]
+        wrapped_lines = 0
+        for seg in segments:
+            wrapped_lines += max(1, -(-len(seg) // chars_per_line))
+        # Add extra lines for semicolon-delimited items (common in Broker
+        # Active Interest and Deal Activity where each item is on its own line).
+        wrapped_lines += text.count(";")
+        wrapped_lines = max(min_lines, wrapped_lines)
+        return min(18 + (wrapped_lines - 1) * 14, max_height)
 
     label_min_lines = {
         "Deal Activity": 4,
         "Ann's Commentary": 4,
+        "Broker Active Interest from Weekly Reporting": 2,
     }
 
     for label, val in note_labels:

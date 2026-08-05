@@ -2,6 +2,30 @@
 
 All notable changes to the Leasing automations repo. Newest at the top.
 
+## 2026-08-05 — Fix Broker Active Interest row height clipping content (L1)
+
+- **File(s):** `snap_shot/rebuild.py`
+- **Author:** Alexis Pattison
+
+**Why.** Alexis reported that on every property block the 'Broker Active Interest from Weekly Reporting' row was cutting off text mid-line despite `wrap_text=True` being set on the cell. Root cause: the row-height estimator `_row_height_for` assumed 145 characters per visible line and capped max height at 110pt. Measured against actual column width (merged C..LAST_COL at 9pt Calibri), the true chars-per-line is closer to 85, and Broker Active Interest content can easily exceed the 110pt cap.
+
+**What changed.**
+- `_row_height_for` now uses `chars_per_line=85` (was 145) and `max_height=280pt` (was 110pt).
+- Estimator now respects explicit `\n` line breaks in source text (previously ignored, so paragraphs with real newlines under-counted lines).
+- Added `"Broker Active Interest from Weekly Reporting": 2` to `label_min_lines` so the row is always at least 2 lines tall.
+
+**What did not change.**
+- `wrap_text=True` was already set on the value cell — no alignment or wrap changes needed.
+- Other note rows (Deal Activity, Ann's Commentary, etc.) also benefit from the tighter estimate but keep their existing `min_lines` floors.
+- No changes to workbook layout, columns, or any other formatting.
+
+**Risk / rollback.**
+- Risk: low. Rows may be slightly taller than before across all property blocks (mostly visible on the ones with longer notes). If any property block now feels overly tall, tune `chars_per_line` up (e.g. 90-95) or `max_height` down.
+- Rollback: revert this commit.
+
+**Verification.**
+- Fire nightly. Open the workbook at WORKING DOCS/Leasing-Snap-Shot.xlsx and confirm the Broker Active Interest row on properties with long content now shows all text without clipping.
+
 ## 2026-08-05 — First successful end-to-end run + add Pillow for logo (L1)
 
 - **File(s):** `snap_shot/requirements.txt`
