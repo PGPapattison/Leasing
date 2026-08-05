@@ -1637,11 +1637,11 @@ def write_property_block(ws, start_row, name, address, units, mapping_entry):
         wrapped_lines = max(min_lines, wrapped_lines)
         return min(18 + (wrapped_lines - 1) * line_height, max_height)
 
-    label_min_lines = {
-        "Deal Activity": 4,
-        "Ann's Commentary": 4,
-        "Broker Active Interest from Weekly Reporting": 2,
-    }
+    # No per-label line floors anymore. Populated note rows size to their
+    # actual content (via _row_height_for), and empty rows collapse to a
+    # single line via the has_real_content check below. The +15pt headroom
+    # added later gives ~1 line of live-typing room without over-provisioning.
+    label_min_lines = {}
 
     # Column B is width 20 (see COL_WIDTHS). At 9pt bold Calibri, ~17 chars
     # per visible line. Compute the label's own line count and use it as a
@@ -1663,7 +1663,13 @@ def write_property_block(ws, start_row, name, address, units, mapping_entry):
         # Ensure row is tall enough for whichever cell wraps to more lines.
         label_lines = max(1, -(-len(label) // LABEL_CHARS_PER_LINE))
         effective_min_lines = max(min_lines, label_lines)
-        row_h = _row_height_for(val, min_lines=effective_min_lines)
+        # For note rows with content: use safety_margin=0 (no wrap buffer)
+        # since the +15pt headroom below already covers ~1 line of live
+        # typing. For empty/placeholder rows: use safety_margin=0 too (they
+        # collapse to a single line anyway).
+        row_h = _row_height_for(
+            val, min_lines=effective_min_lines, safety_margin=0
+        )
         # Live-typing headroom: merged cells don't auto-fit in Excel, so if
         # someone types more after the rebuild, the row won't grow until the
         # next nightly. Add a modest fixed buffer (~1 extra line, +15pt)

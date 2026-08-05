@@ -2,6 +2,43 @@
 
 All notable changes to the Leasing automations repo. Newest at the top.
 
+## 2026-08-05 — Right-size note rows (drop 4-line floor + wrap safety margin) (L1)
+
+- **File(s):** `snap_shot/rebuild.py`
+- **Author:** Alexis Pattison
+
+**Why.** Alexis flagged that Deal Activity & Notes rows on Barker Cypress and Castle Shops looked too tall relative to their content — wasted vertical space. Inspection confirmed rows with 1–2 lines of content were rendering at 63–78pt when 33–48pt would suffice.
+
+**Root causes:**
+1. `label_min_lines = {Deal Activity: 4, Ann's Commentary: 4, BAI: 2}` was forcing populated rows to be at least 4 (or 2) lines tall regardless of actual content length.
+2. `safety_margin=1` in `_row_height_for` was adding 1 extra line to every populated row on top of the +15pt headroom — double-buffering.
+
+**What changed.**
+- Removed the `label_min_lines` floors entirely. Populated rows now size purely to their wrapped-line count. Empty rows still collapse to 18pt via the `has_real_content` check.
+- Pass `safety_margin=0` to `_row_height_for` for note rows. The +15pt headroom already covers ~1 line of live-typing edge cases.
+- Label wrap floor still respected (a long label like "Broker Active Interest from Weekly Reporting" still gets the ~3 lines it needs to display).
+
+**Height impact (Barker Cypress + Castle Shops before → after):**
+- Deal Activity `Ultra Nails\nPAC Payments`: 78pt → 48pt (–38%)
+- Property Flags `**Homeless\n**Roof`: 63pt → 48pt
+- Deal Activity `Different Touch — 4/30/2027 — Expected to Renew...`: 78pt → 48pt
+- Broker Calls `Bi-Weekly Calls: 7/23/2026`: 48pt → 33pt
+- Empty Deal Activity/Ann's Commentary: 18pt (unchanged — still collapse)
+- Populated BAI ~120 chars with 3 items: 153pt → 93pt
+
+**What did not change.**
+- Empty rows still collapse to 18pt.
+- Long populated rows still size proportional to content.
+- +15pt live-typing headroom still applied to any populated row.
+- Per-unit Notes rows still Excel-auto-fit natively.
+
+**Risk / rollback.**
+- Risk: low. Height comes from actual content length + headroom. If a row's content happens to sit exactly on a wrap boundary, +15pt buffer catches it.
+- Rollback: revert this commit.
+
+**Verification.**
+- Fire nightly with `force_rebuild=true`. Confirm Barker Cypress and Castle Shops Deal Activity rows are visibly proportional to their content.
+
 ## 2026-08-05 — Clean ClickUp description format, use Excel Online URL, trim row headroom (L2)
 
 - **File(s):** `snap_shot/rebuild.py`
