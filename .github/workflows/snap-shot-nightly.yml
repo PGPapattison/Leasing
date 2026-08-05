@@ -34,4 +34,5 @@ jobs:
           APATTISON_MS_REFRESH_TOKEN: ${{ secrets.APATTISON_MS_REFRESH_TOKEN }}
           APPFOLIO_API_SECRET: ${{ secrets.APPFOLIO_API_SECRET }}
           CLICKUP_API_TOKEN: ${{ secrets.CLICKUP_API_TOKEN }}
+          SHAREPOINT_FOLDER_PATH: "General/_Prudent Growth Operations, LLC/LEASING & ASSET MANAGEMENT/WORKING DOCS"
         run: python snap_shot/rebuild.py --mode=nightly

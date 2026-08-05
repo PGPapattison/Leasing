@@ -1,10 +1,10 @@
-name: Snap Shot — resolve folder (one-shot)
+name: Snap Shot — cleanup old file (one-shot)
 
 on:
   workflow_dispatch:
 
 jobs:
-  resolve:
+  cleanup:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -13,7 +13,7 @@ jobs:
           python-version: '3.11'
       - name: Install requests
         run: pip install requests
-      - name: Resolve folder
+      - name: Cleanup old file
         env:
           APATTISON_MS_REFRESH_TOKEN: ${{ secrets.APATTISON_MS_REFRESH_TOKEN }}
-        run: python snap_shot/resolve_folder.py
+        run: python snap_shot/cleanup_old_location.py
