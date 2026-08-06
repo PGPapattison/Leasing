@@ -2597,15 +2597,15 @@ def write_property_block(ws, start_row, name, address, units, mapping_entry):
             # (matches the Notes-column strategy above): setting a fixed
             # height would prevent Excel from auto-growing the row when
             # someone types more into the Notes cell later.
-            if clickup_summary and len(clickup_summary) > 100:
-                # ClickUp Summary column O widened to 80 (Commit 2). At 9pt
-                # Calibri that's ~100 chars per visible line. Count wrapped
-                # lines conservatively.
-                summ_lines = max(1, -(-len(clickup_summary) // 100))
+            if clickup_summary and len(clickup_summary) > 85:
+                # ClickUp Summary column O widened to 80 (Commit 2). At 10pt
+                # Calibri (bumped from 8pt on 2026-08-06) that's ~85 chars per
+                # visible line. Count wrapped lines conservatively.
+                summ_lines = max(1, -(-len(clickup_summary) // 85))
                 summ_lines += clickup_summary.count("\n")
                 # Only raise the height — don't lower one already set by the
-                # Notes column primer above.
-                needed_h = min(17 + (summ_lines - 1) * 14, 409)
+                # Notes column primer above. 10pt line height ~16pt.
+                needed_h = min(19 + (summ_lines - 1) * 16, 409)
                 existing_h = ws.row_dimensions[row].height or 0
                 if needed_h > existing_h:
                     ws.row_dimensions[row].height = needed_h
@@ -2648,10 +2648,11 @@ def write_property_block(ws, start_row, name, address, units, mapping_entry):
                 elif col_label == "Notes":
                     cell.alignment = Alignment(horizontal="left", vertical="top", wrap_text=True, indent=1)
                 elif col_label == "ClickUp Summary":
-                    # Read-only from ClickUp, so smaller size + italic-slate
-                    # to distinguish visually from REM-editable columns.
+                    # Read-only from ClickUp, so italic-slate to distinguish
+                    # visually from REM-editable columns. Font bumped from 8pt
+                    # to 10pt per Alexis 2026-08-06 for readability.
                     cell.alignment = Alignment(horizontal="left", vertical="top", wrap_text=True, indent=1)
-                    cell.font = Font(name=FONT_NAME, size=8, italic=True, color=SLATE)
+                    cell.font = Font(name=FONT_NAME, size=10, italic=True, color=SLATE)
                 elif col_label == "REM ClickUp Comment":
                     # REM-editable. Full 9pt navy so it's visually distinct
                     # from the muted ClickUp Summary next to it — signals

@@ -2,6 +2,32 @@
 
 All notable changes to the Leasing automations repo. Newest at the top.
 
+## 2026-08-06 — Snap Shot: bump ClickUp Summary font 8pt → 10pt (L1)
+
+- **File(s):** `snap_shot/rebuild.py`
+- **Author:** Alexis Pattison
+- **Skill:** no bump (behavior described in v1.2 still current)
+
+**Why.** Alexis asked for the ClickUp Summary column (col O) to be more readable. 8pt italic slate was hard to scan next to the 9pt navy REM Comment column, especially on Renewal/Vacancy summaries that pack a lot of information into the bullet list.
+
+**What changed.**
+- `rebuild.py` — ClickUp Summary cell font raised from `size=8` to `size=10` (italic + SLATE color unchanged). Row-height priming for long summaries adjusted from `>100 chars/line, 14pt line-height` to `>85 chars/line, 16pt line-height` so multi-line summaries still render fully wrapped without truncation at the new font size. Base row height for a wrapped summary raised from 17 to 19.
+
+**What did not change.**
+- Column O width (still 80).
+- Font family (Calibri), italic styling, SLATE color, top-aligned + wrap.
+- REM ClickUp Comment column (col P) still 9pt navy — the intentional visual contrast between muted read-only summary and full-brightness editable comment is preserved.
+- No other font sizes touched (headers, banner, TICAM row, Last Synced all unchanged).
+- No ClickUp fields, no cron schedule, no auth, no data source, no skill behavior change.
+
+**Risk / rollback.**
+- Risk: low. Cell-formatting-only change. Worst case: some very long summaries now render at height 409 (the max cap) and Excel adds a scroll clip inside the cell — visually unpleasant but not data loss.
+- Rollback: revert commit.
+
+**Verification.**
+- Local syntax check passed (`python3 -m py_compile snap_shot/rebuild.py`).
+- Next nightly rebuild will apply the new font. On any property block with a Renewal or Vacancy row, col O text should be visibly larger and match the readability of the surrounding data cells while remaining italic + muted.
+
 ## 2026-08-06 — Snap Shot: add 2026 TICAM (NNN) row per property (L2)
 
 - **File(s):** `snap_shot/rebuild.py`, `snap_shot/data/property_ticam_map.json` (new)
