@@ -2,6 +2,35 @@
 
 All notable changes to the Leasing automations repo. Newest at the top.
 
+## 2026-08-06 — Snap Shot: move nightly + weekly crons off the :00 slot (L2)
+
+- **File(s):** `.github/workflows/snap-shot-nightly.yml`, `.github/workflows/snap-shot-weekly.yml`
+- **Author:** Alexis Pattison
+- **Skill:** `prudent-snap-shot-rebuild` v1.1 (times updated in-place, no version bump)
+
+**Why.** The nightly workflow's scheduled `0 8 * * *` fire never actually ran — the file has been on main since Aug 4 20:18 UTC, and both expected scheduled fires (Aug 5 and Aug 6 at 08:00 UTC) were dropped by GitHub Actions. Only 3 scheduled events fired across the whole repo in 36 hours, none of which was the nightly. GitHub's documented behavior: on-the-hour crons are heavily contended globally and scheduled events at those slots are the most likely to be throttled or dropped, with no retry. The workbook has been getting rebuilt only when Alexis manually triggers `force_rebuild=true`.
+
+**What changed.**
+- `snap-shot-nightly.yml`: cron `'0 8 * * *'` → `'17 8 * * *'` (4:17 AM EDT / 3:17 AM EST).
+- `snap-shot-weekly.yml`: cron `'0 9 * * 1'` → `'23 9 * * 1'` (5:23 AM EDT / 4:23 AM EST).
+- Added a comment in each YAML file explaining why we intentionally avoid :00.
+
+**What did not change.**
+- The on-demand poll workflow (`*/15 11-22 * * 1-5`) is untouched — :00 is only 1 of 4 fire slots per hour there, so throttling matters less.
+- No Python or workbook-layout changes.
+- Ann's edit-preservation, REM ClickUp Comment sync, race-condition guard, DST behavior — all unchanged.
+- Manual `workflow_dispatch` still available on both workflows with the `force_rebuild` override on nightly.
+
+**Risk / rollback.**
+- Risk: low. Only shifts fire time by 17 / 23 minutes.
+- Rollback: revert this commit; but be aware the previous cron literally never fired, so rolling back reintroduces the bug.
+
+**Verification.**
+- Tomorrow (2026-08-07) at 08:17 UTC / 4:17 AM ET, expect a scheduled run to appear in `gh run list --workflow "Snap Shot — nightly rebuild" --repo PGPapattison/Leasing` with `event=schedule`. If it does not fire within 15 minutes of the scheduled time, investigate further (workflow-file freshness, repo activity, or GitHub Actions status).
+- Next Monday (2026-08-10) at 09:23 UTC / 5:23 AM ET, expect the weekly rebuild to fire.
+
+---
+
 ## 2026-08-06 — Snap Shot: REM ClickUp Comment column + write-back to ClickUp tasks (L3 — Commit 2 of 2)
 
 - **File(s):** `snap_shot/rebuild.py`

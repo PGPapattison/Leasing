@@ -4,7 +4,10 @@ on:
   schedule:
     # 5:00 AM ET Mondays — 09:00 UTC (EDT) / 10:00 UTC (EST).
     # Same DST caveat as nightly; runs before the office opens either way.
-    - cron: '0 9 * * 1'
+    # 5:23 AM ET Mondays — 09:23 UTC (EDT) / 10:23 UTC (EST). Offset from :00
+    # for the same reason as the nightly: GitHub Actions drops on-the-hour
+    # scheduled events under load.
+    - cron: '23 9 * * 1'
   workflow_dispatch: {}
 
 concurrency:
