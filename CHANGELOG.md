@@ -2,6 +2,42 @@
 
 All notable changes to the Leasing automations repo. Newest at the top.
 
+## 2026-08-06 — Snap Shot: REM ClickUp Comment column + write-back to ClickUp tasks (L3 — Commit 2 of 2)
+
+- **File(s):** `snap_shot/rebuild.py`
+- **Author:** Alexis Pattison
+- **Skill:** `prudent-snap-shot-rebuild` v1.0 → v1.1 (pending, same-day update)
+
+**Why.** Commit 1 gave REMs a read-only ClickUp Summary column in the Snap Shot. Alexis then asked for the reverse channel — a place in the workbook where REMs can type a comment that automatically gets posted back to the matching ClickUp task(s), attributed with the REM's name. This closes the loop: REMs read the AI summary in col O and reply directly in col P, no context-switch to ClickUp.
+
+**What changed.**
+- Added **column P “REM ClickUp Comment”** (REM-editable) and **column Q “Last Synced”** (read-only receipt) to the Rent Roll section of every property block. `LAST_COL` widened from O → Q. `COL_WIDTHS` set: O=80 (was 44 — Alexis: rows were too tall at the narrower width), P=40, Q=24. REM name banner still merges `L{row}:{LAST_COL}{row}` and now spans L–Q. TOTALS row leaves both new columns blank.
+- `pull_lar_summaries()` now returns FOUR indexes instead of two: adds `task_ids_by_tenant_id = {tenant_id: [task_id, ...]}` and `task_ids_by_prop_unit = {(pid, unit): [task_id, ...]}`. Task-id lists are accumulated across all three LAR lists (Renewal + Vacancy + Docs Workflow) so a REM comment for a tenant on multiple lists posts to every matching task (per Alexis: “Post to all matching tasks”).
+- New helper **`sync_rem_comments_to_clickup()`** — iterates every extracted REM comment, computes an sha8 hash of whitespace-normalized text, and posts to matching tasks ONLY when the hash differs from the sha8 embedded in the paired Last Synced cell. Comment format: `📋 LSS note from {rem_name} ({YYYY-MM-DD}):\n\n{comment}`. On success, refreshes Last Synced to `"YYYY-MM-DD HH:MM ET · sha8:xxxxxxxx"`. Empty comments and units with no matching task are skipped (no stamp, so a later run can retry).
+- `extract_ann_edits()` now returns FIVE values (was three): adds `rem_comments_by_prop_unit = {(pid, unit_label): comment}` and `last_synced_by_prop_unit = {(pid, unit_label): stamp}`. Both are round-tripped through SharePoint so REM edits survive nightly rebuilds and diff-detect is stable across runs.
+- `build_workbook()` signature adds `rem_comments_by_prop_unit=None` and `last_synced_by_prop_unit=None`; per-property subsets are filtered to `mapping_entry["_rem_comments_by_unit"]` and `mapping_entry["_last_synced_by_unit"]` (keyed by unit_label alone). `write_property_block()` reads those to populate cols P and Q per unit; primes row height when col P has a long comment.
+- `run_build()` wires the pipeline in the correct order: extract → rent-roll pull → LAR pull (with task-ids) → sync REM comments → build → upload. Sync is non-fatal.
+- Added `import hashlib`.
+
+**What did not change.**
+- Column N (“Notes”) is still Ann’s per-unit note field and still round-trips through `unit_notes.json` — nothing about her workflow changes. Only the new column P posts to ClickUp.
+- Ann-authored deal-activity notes, Property Flags, Broker Calls, Ann's Commentary, Market Rent overrides, Broker Active Interest (weekly-only refresh) all still preserved via `extract_ann_edits`.
+- REM names in `property_mapping_all73.json` are unchanged (still baked in from Commit 1 — 30 Parker, 24 Leah, 18 Kerri).
+- ClickUp Summary (col O) is still read-only from ClickUp → Excel. Nothing round-trips from O back to ClickUp.
+- The race-condition guard (skip when Ann edited within 15 minutes) is unchanged.
+- Dry-run mode is preserved: `sync_rem_comments_to_clickup` receives `dry_run=True` and logs targets without posting.
+
+**Risk / rollback.**
+- Risk: medium. New write path (this is our first automation that posts REM-authored content back into ClickUp task comments). Diff-detect is hash-based, so unless a REM manually strips the sha8 from col Q, the same comment cannot double-post.
+- Rollback: `git revert <this-sha>`. Column P/Q content already in SharePoint will simply be ignored by the reverted code (extract_ann_edits will return three values again). No cleanup needed on ClickUp — comments already posted stay as historical record.
+
+**Verification.**
+- Local smoke test: `python3 /tmp/local_test2.py` builds a two-unit fixture, confirms cols O/P/Q populate, hash helpers round-trip, REM banner spans L:Q.
+- Production: trigger `gh workflow run "Snap Shot — nightly rebuild" --repo PGPapattison/Leasing --ref main -f force_rebuild=true` and verify logs show `LAR pull totals: task-ids — N tenants → tasks, M (prop,unit) → tasks` and `REM comment sync: X unit(s) synced (Y ClickUp comment(s) posted), Z unchanged skipped, ...`.
+- First real REM comment: after this ships, watch the next rebuild for the first sync event and spot-check the posted comment on the target ClickUp task.
+
+---
+
 ## 2026-08-06 — Snap Shot: add ClickUp Summary column + REM name banner (L3 — Commit 1 of 2)
 
 - **File(s):** `snap_shot/rebuild.py`, `snap_shot/data/property_mapping_all73.json`

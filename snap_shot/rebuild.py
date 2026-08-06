@@ -66,6 +66,7 @@ USAGE
 
 import argparse
 import base64
+import hashlib
 import io
 import json
 import logging
@@ -591,31 +592,40 @@ def _cu_field_value(task, field_id):
 def pull_lar_summaries():
     """Pull the AI-generated Summary custom field from every task in each of
     the three LAR lists (Renewal Pipeline, Vacancy Pipeline, Documents
-    Workflow) and return two indexes:
+    Workflow) and return FOUR indexes:
 
-        by_tenant_id   = {tenant_id_str: summary_text}
-        by_prop_unit   = {(property_id_str, unit_num_str): summary_text}
+        summaries_by_tenant_id  = {tenant_id_str: summary_text}
+        summaries_by_prop_unit  = {(property_id_str, unit_str): summary_text}
+        task_ids_by_tenant_id   = {tenant_id_str: [task_id, ...]}
+        task_ids_by_prop_unit   = {(property_id_str, unit_str): [task_id, ...]}
 
-    Match precedence when multiple lists share the same key:
+    The summary indexes are used to populate the ClickUp Summary column (O).
+    The task-ID indexes are used by Commit 2's REM comment write-back to
+    post the REM's note to ALL matching tasks (per Alexis 2026-08-06:
+    "Post to all matching tasks").
+
+    Summary precedence when multiple lists share the same key:
         Renewal > Vacancy > Documents Workflow
-    (Renewal is preferred because it typically reflects the most recent AI
-    read of the tenant's current renewal state; Vacancy applies when a unit
-    is on the vacancy board; Documents Workflow is a fallback for tenants
-    that only appear in the docs pipeline.)
+    Task-ID lists are accumulated across all three lists (no dedup precedence
+    — a tenant on Renewal AND Documents Workflow gets BOTH task_ids stored).
 
-    Tenant IDs and Property IDs are normalized to str() with surrounding
-    whitespace stripped; unit numbers likewise. Empty summaries are dropped
-    (no point in overwriting a cell with a blank string).
+    Tenant IDs, Property IDs, and unit numbers are all normalized to str()
+    with surrounding whitespace stripped. Empty summaries are dropped (no
+    point in overwriting a cell with a blank string), but a task without a
+    populated Summary can still be a comment target so its ID is still
+    indexed if it has a TenantId / (PropertyId, Unit).
     """
-    # Order matters — first list wins for tenant-id collisions.
+    # Order matters — first list wins for summary tenant-id collisions.
     list_order = [
         ("Renewal Pipeline", LAR_RENEWAL_LIST_ID),
         ("Vacancy Pipeline", LAR_VACANCY_LIST_ID),
         ("Documents Workflow", LAR_DOCS_WORKFLOW_LIST_ID),
     ]
 
-    by_tenant_id = {}
-    by_prop_unit = {}
+    summaries_by_tenant_id = {}
+    summaries_by_prop_unit = {}
+    task_ids_by_tenant_id = {}
+    task_ids_by_prop_unit = {}
     summary_field_by_list = LAR_SUMMARY_FIELD_BY_LIST
 
     for list_label, list_id in list_order:
@@ -630,44 +640,245 @@ def pull_lar_summaries():
             LOG.warning(f"LAR pull: no Summary field ID configured for list {list_id}. Skipping.")
             continue
 
-        added_by_tid = 0
-        added_by_pu = 0
+        added_summ_tid = 0
+        added_summ_pu = 0
+        added_task_tid = 0
+        added_task_pu = 0
         for t in tasks:
-            summary = _cu_field_value(t, summary_field)
-            if not summary or not str(summary).strip():
+            task_id = t.get("id")
+            if not task_id:
                 continue
-            summary_text = str(summary).strip()
+
+            summary = _cu_field_value(t, summary_field)
+            summary_text = str(summary).strip() if summary else ""
 
             tid_raw = _cu_field_value(t, CU_TENANT_ID_FIELD)
-            if tid_raw is not None:
-                tid = str(tid_raw).strip()
-                if tid and tid not in by_tenant_id:
-                    by_tenant_id[tid] = summary_text
-                    added_by_tid += 1
+            tid = str(tid_raw).strip() if tid_raw is not None else ""
 
-            # Vacancy list also gets indexed by (property_id, unit_num) so
-            # vacant units without a Tenant ID can still get matched.
-            if list_id == LAR_VACANCY_LIST_ID:
-                pid_raw = _cu_field_value(t, CU_PROPERTY_ID_FIELD)
-                unit_raw = _cu_field_value(t, CU_UNIT_NUMBER_FIELD)
-                if pid_raw is not None and unit_raw is not None:
-                    pid = str(pid_raw).strip()
-                    unit = str(unit_raw).strip()
+            # Property ID + Unit # (both live on Vacancy Pipeline tasks; also
+            # tolerated if present on other lists though not expected).
+            pid_raw = _cu_field_value(t, CU_PROPERTY_ID_FIELD)
+            pid = str(pid_raw).strip() if pid_raw is not None else ""
+            unit_raw = _cu_field_value(t, CU_UNIT_NUMBER_FIELD) if list_id == LAR_VACANCY_LIST_ID else None
+            unit = str(unit_raw).strip() if unit_raw is not None else ""
+
+            # Summary indexing (first-list-wins).
+            if summary_text:
+                if tid and tid not in summaries_by_tenant_id:
+                    summaries_by_tenant_id[tid] = summary_text
+                    added_summ_tid += 1
+                if list_id == LAR_VACANCY_LIST_ID and pid and unit:
                     key = (pid, unit)
-                    if pid and unit and key not in by_prop_unit:
-                        by_prop_unit[key] = summary_text
-                        added_by_pu += 1
+                    if key not in summaries_by_prop_unit:
+                        summaries_by_prop_unit[key] = summary_text
+                        added_summ_pu += 1
+
+            # Task-ID indexing (accumulated across all lists; used by the
+            # REM comment write-back to post to every matching task).
+            if tid:
+                lst = task_ids_by_tenant_id.setdefault(tid, [])
+                if task_id not in lst:
+                    lst.append(task_id)
+                    added_task_tid += 1
+            if list_id == LAR_VACANCY_LIST_ID and pid and unit:
+                key = (pid, unit)
+                lst = task_ids_by_prop_unit.setdefault(key, [])
+                if task_id not in lst:
+                    lst.append(task_id)
+                    added_task_pu += 1
 
         LOG.info(
             f"LAR pull: {list_label} — {len(tasks)} tasks, "
-            f"+{added_by_tid} by TenantId, +{added_by_pu} by (PropertyId,Unit)."
+            f"+{added_summ_tid} summaries by TenantId, +{added_summ_pu} summaries by (PropertyId,Unit), "
+            f"+{added_task_tid} task-ids by TenantId, +{added_task_pu} task-ids by (PropertyId,Unit)."
         )
 
     LOG.info(
-        f"LAR pull totals: {len(by_tenant_id)} summaries indexed by Tenant ID, "
-        f"{len(by_prop_unit)} by (PropertyId, Unit#)."
+        f"LAR pull totals: "
+        f"summaries — {len(summaries_by_tenant_id)} by Tenant ID, {len(summaries_by_prop_unit)} by (PropertyId, Unit); "
+        f"task-ids — {len(task_ids_by_tenant_id)} tenants → tasks, {len(task_ids_by_prop_unit)} (prop,unit) → tasks."
     )
-    return by_tenant_id, by_prop_unit
+    return (
+        summaries_by_tenant_id,
+        summaries_by_prop_unit,
+        task_ids_by_tenant_id,
+        task_ids_by_prop_unit,
+    )
+
+
+# ─── REM ClickUp Comment sync (Commit 2) ───────────────────────────────────
+#
+# The REM types a comment into col P of the Snap Shot workbook. On the next
+# rebuild, this function scans every extracted REM comment, compares it
+# against the "Last Synced" stamp already in col Q, and — for any comment
+# whose sha8 hash differs from the stamped hash — posts to ALL matching
+# ClickUp tasks (Renewal + Vacancy + Documents Workflow) and refreshes the
+# stamp with a new timestamp + hash.
+#
+# Comment format on ClickUp:
+#   📋 LSS note from {REM name} ({YYYY-MM-DD}):
+#
+#   {comment text}
+#
+# Last Synced cell format (compact enough to fit col Q, width 24):
+#   "YYYY-MM-DD HH:MM ET · sha8:xxxxxxxx"
+# The sha8 lets diff-detect ignore whitespace edits that render the same.
+
+
+def _comment_hash(text):
+    """Short, stable identity for a REM comment. Whitespace on either end
+    is stripped and internal runs of whitespace are collapsed so trivial
+    reformatting doesn't trigger a re-sync. Returns first 8 hex chars of
+    SHA-1 — collisions are astronomically unlikely for the volume
+    involved (dozens of comments per property, at most)."""
+    if not text:
+        return ""
+    normalized = " ".join(text.split())
+    return hashlib.sha1(normalized.encode("utf-8")).hexdigest()[:8]
+
+
+_LAST_SYNCED_HASH_RE = re.compile(r"sha8:([0-9a-f]{8})")
+
+
+def _last_synced_hash(last_synced_cell):
+    """Extract the sha8 hash embedded in a Last Synced cell string.
+    Returns "" if the cell is blank or was hand-edited to strip the hash."""
+    if not last_synced_cell:
+        return ""
+    m = _LAST_SYNCED_HASH_RE.search(last_synced_cell)
+    return m.group(1) if m else ""
+
+
+def _rem_name_for_property(mapping_entry):
+    return (mapping_entry.get("rem_name") or "").strip() or "REM"
+
+
+def sync_rem_comments_to_clickup(
+    mapping,
+    rem_comments_by_prop_unit,
+    last_synced_by_prop_unit,
+    task_ids_by_tenant_id,
+    task_ids_by_prop_unit,
+    rent_roll_by_property,
+    dry_run=False,
+):
+    """Post REM-authored comments from col P back to matching ClickUp tasks.
+
+    Diff-detect: only posts when the sha8 hash of the comment differs from
+    the sha8 embedded in the paired Last Synced cell. This means:
+      * A brand-new comment (Last Synced is blank) always posts.
+      * A comment unchanged since the last sync is skipped.
+      * A comment that was previously synced and then cleared (P blank) is
+        NOT reposted — blanking a comment is treated as "nothing new to
+        say," not as an event worth notifying ClickUp about.
+
+    Attribution uses the property's REM name (from the mapping file). If a
+    property has no rem_name, we fall back to "REM" — the post still lands,
+    just without the personalized attribution.
+
+    Posts to ALL matching tasks per Alexis 2026-08-06 (Renewal + Vacancy +
+    Docs Workflow — whichever contain a matching TenantId, and Vacancy
+    tasks that match by (PropertyId, Unit#)). If no matching tasks are
+    found for a unit, we log a warning and keep the comment in col P for
+    the REM to see — but do NOT stamp Last Synced, so a subsequent run
+    will retry if the ClickUp task appears later.
+
+    Returns the mutated last_synced_by_prop_unit dict (with fresh stamps
+    for every successfully-posted comment).
+    """
+    if not rem_comments_by_prop_unit:
+        LOG.info("REM comment sync: no REM comments extracted from the workbook — nothing to sync.")
+        return last_synced_by_prop_unit
+
+    # Build a fast lookup: (pid, unit_label) → tenant_id (from the rent
+    # roll, so occupied units can also cross-reference their Renewal /
+    # Documents Workflow tasks via TenantId).
+    tid_by_prop_unit = {}
+    for pid, units in rent_roll_by_property.items():
+        for u in units:
+            unit_label = unit_display(u)
+            tid = str(u.get("TenantId") or "").strip()
+            if unit_label and tid:
+                tid_by_prop_unit[(str(pid), unit_label)] = tid
+
+    rem_name_by_pid = {
+        str(m.get("appfolio_id") or "").strip(): _rem_name_for_property(m)
+        for m in mapping
+    }
+
+    posted = 0
+    skipped_unchanged = 0
+    skipped_no_target = 0
+    posts_by_task = 0
+    now_str = now_et().strftime("%Y-%m-%d %H:%M ET")
+
+    for (pid, unit_label), comment_text in rem_comments_by_prop_unit.items():
+        comment_text = (comment_text or "").strip()
+        if not comment_text:
+            continue
+        new_hash = _comment_hash(comment_text)
+        prior_hash = _last_synced_hash(last_synced_by_prop_unit.get((pid, unit_label), ""))
+        if new_hash == prior_hash and prior_hash:
+            skipped_unchanged += 1
+            continue
+
+        # Collect target task ids. Prefer TenantId path when the unit is
+        # occupied; add the (pid, unit) path for the vacancy board. A unit
+        # can legitimately have hits on both paths (e.g., a Renewal task
+        # keyed by TenantId AND a stale Vacancy task keyed by (pid,unit)).
+        target_ids = []
+        tid = tid_by_prop_unit.get((pid, unit_label))
+        if tid:
+            for t in task_ids_by_tenant_id.get(tid, []):
+                if t not in target_ids:
+                    target_ids.append(t)
+        for t in task_ids_by_prop_unit.get((pid, unit_label), []):
+            if t not in target_ids:
+                target_ids.append(t)
+
+        if not target_ids:
+            LOG.warning(
+                f"REM comment sync: no ClickUp task found for PropertyId={pid} Unit={unit_label!r} "
+                f"(TenantId={tid or '—'}); leaving col P intact and NOT stamping Last Synced so a "
+                f"future run can retry once a matching task exists."
+            )
+            skipped_no_target += 1
+            continue
+
+        rem_name = rem_name_by_pid.get(pid, "REM")
+        today = now_et().strftime("%Y-%m-%d")
+        body = f"📋 LSS note from {rem_name} ({today}):\n\n{comment_text}"
+
+        if dry_run:
+            LOG.info(
+                f"REM comment sync (DRY RUN): would post to {len(target_ids)} task(s) "
+                f"for PropertyId={pid} Unit={unit_label!r} — targets: {target_ids}"
+            )
+        else:
+            for task_id in target_ids:
+                try:
+                    cu_post_comment(task_id, body)
+                    posts_by_task += 1
+                except Exception as e:  # noqa: BLE001
+                    LOG.warning(
+                        f"REM comment sync: post failed on task {task_id} "
+                        f"(PropertyId={pid} Unit={unit_label!r}): {e}"
+                    )
+                    # Continue posting to other tasks; a partial failure
+                    # still counts as "synced" — next run's hash check will
+                    # skip a repeat. Never re-attempt in the same run.
+
+        # Stamp Last Synced regardless of dry_run so a dry-run's log
+        # accurately previews what a real run would do. (In dry-run this
+        # dict isn't ever written back to SharePoint.)
+        last_synced_by_prop_unit[(pid, unit_label)] = f"{now_str} · sha8:{new_hash}"
+        posted += 1
+
+    LOG.info(
+        f"REM comment sync: {posted} unit(s) synced ({posts_by_task} ClickUp comment(s) posted), "
+        f"{skipped_unchanged} unchanged skipped, {skipped_no_target} skipped (no matching task)."
+    )
+    return last_synced_by_prop_unit
 
 
 def _build_refresh_section(sharepoint_url, mode):
@@ -1157,12 +1368,19 @@ PROPERTY_ID_RE = re.compile(r"Property ID:\s*([0-9]+)")
 
 
 def extract_ann_edits(workbook_bytes):
-    """Parse the current SharePoint workbook and return (property_overrides,
-    unit_notes) using the same schemas as property_notes_overrides.json /
-    notes_by_unit.json, keyed by AppFolio PropertyId (property overrides) and
-    by unit note-key (OccupancyId/UnitId, unit notes) — mirroring
-    extract_ann_notes.py's cell-position matching approach, extended to also
-    read Market Rent (col H) and per-unit Notes (col N).
+    """Parse the current SharePoint workbook and return five things:
+
+      property_overrides           = {property_id: {note_key: value}}
+      unit_notes                   = {"pid::unit_label": note_text}
+      market_rent_overrides        = {property_id: {unit_label: market_rent_value}}
+      rem_comments_by_prop_unit    = {(pid, unit_label): comment_text}
+      last_synced_by_prop_unit     = {(pid, unit_label): last_synced_string}
+
+    The last two are new in Commit 2 and support REM-authored comments in
+    col P (REM ClickUp Comment) plus the paired col Q (Last Synced). They
+    round-trip through SharePoint so REM edits survive nightly rebuilds and
+    so the sync-diff can tell whether the REM's text changed since the
+    previous run.
 
     On any parse error for an individual block, that block's edits are
     skipped (logged) rather than aborting the whole extraction — a single
@@ -1170,7 +1388,9 @@ def extract_ann_edits(workbook_bytes):
     """
     property_overrides = {}
     unit_notes = {}
-    market_rent_overrides = {}  # {property_id: {unit_note_key: market_rent_value}}
+    market_rent_overrides = {}  # {property_id: {unit_label: market_rent_value}}
+    rem_comments_by_prop_unit = {}  # {(pid, unit_label): comment_text}
+    last_synced_by_prop_unit = {}   # {(pid, unit_label): last_synced_string}
 
     try:
         wb = openpyxl.load_workbook(io.BytesIO(workbook_bytes), data_only=True)
@@ -1254,6 +1474,10 @@ def extract_ann_edits(workbook_bytes):
                     tenant_id_val = cell_text(data_row, "D")
                     market_rent_val = cell_text(data_row, "H")
                     note_val = cell_text(data_row, "N")
+                    # Commit 2: REM ClickUp Comment (P) + Last Synced (Q).
+                    # Read exactly like Notes; empty passes through as "".
+                    rem_comment_val = cell_text(data_row, "P")
+                    last_synced_val = cell_text(data_row, "Q")
                     # Note key mirrors build_prototype_v3: OccupancyId else
                     # UnitId. We don't have those ids directly in the sheet,
                     # so key by (PropertyId, Unit label) as a stable fallback
@@ -1264,6 +1488,13 @@ def extract_ann_edits(workbook_bytes):
                         unit_notes[unit_key] = note_val
                     if market_rent_val:
                         market_rent_overrides.setdefault(property_id, {})[unit_val] = market_rent_val
+                    # Only record REM comment / last-synced when non-empty,
+                    # so wiring them back into fresh mapping entries doesn't
+                    # overwrite a genuinely blank cell with "".
+                    if rem_comment_val:
+                        rem_comments_by_prop_unit[(property_id, unit_val)] = rem_comment_val
+                    if last_synced_val:
+                        last_synced_by_prop_unit[(property_id, unit_val)] = last_synced_val
                     data_row += 1
                 block_end = data_row
             else:
@@ -1280,9 +1511,17 @@ def extract_ann_edits(workbook_bytes):
         f"Extracted Ann's edits from SharePoint workbook: {blocks_found} property "
         f"blocks scanned, {len(property_overrides)} with notes, "
         f"{len(unit_notes)} unit notes, "
-        f"{sum(len(v) for v in market_rent_overrides.values())} market-rent overrides."
+        f"{sum(len(v) for v in market_rent_overrides.values())} market-rent overrides, "
+        f"{len(rem_comments_by_prop_unit)} REM ClickUp Comments, "
+        f"{len(last_synced_by_prop_unit)} Last-Synced stamps."
     )
-    return property_overrides, unit_notes, market_rent_overrides
+    return (
+        property_overrides,
+        unit_notes,
+        market_rent_overrides,
+        rem_comments_by_prop_unit,
+        last_synced_by_prop_unit,
+    )
 
 
 def reindex_overrides_by_clickup_task(property_overrides_by_property_id, mapping):
@@ -1379,10 +1618,22 @@ COLS = {
     # column back to ClickUp. Ann's edits are not expected here; extract_ann_edits
     # deliberately does NOT read this column.
     "ClickUp Summary": "O",
+    # REM-editable comment field. Whatever the REM types here posts back to
+    # ClickUp as a comment on ALL matching LAR tasks (Renewal/Vacancy/Docs)
+    # for this unit, attributed as "📋 LSS note from {REM name} ({date})".
+    # Only posts when the text differs from the paired "Last Synced" column.
+    "REM ClickUp Comment": "P",
+    # Timestamp + first ~30 chars of the last-posted comment, written back
+    # after a successful ClickUp post so the REM has visual confirmation and
+    # so the diff-detect knows what was last sent. Read on next rebuild.
+    "Last Synced": "Q",
 }
+# Column widths. O widened from 44 → 80 per Alexis 2026-08-06: at 44 the
+# AI summaries were wrapping to 6–7 lines per unit; 80 gets them to ~2–3.
 COL_WIDTHS = {"A": 3, "B": 20, "C": 26, "D": 10, "E": 9, "F": 11, "G": 8, "H": 11,
-              "I": 11, "J": 11, "K": 11, "L": 15, "M": 11, "N": 34, "O": 44}
-LAST_COL = "O"
+              "I": 11, "J": 11, "K": 11, "L": 15, "M": 11, "N": 34,
+              "O": 80, "P": 40, "Q": 24}
+LAST_COL = "Q"
 FIRST_COL = "B"
 
 STATE_RE = re.compile(r",\s*([A-Z]{2})\s+\d{5}")
@@ -1392,7 +1643,9 @@ def build_workbook(mapping, rent_roll_by_property, property_overrides,
                     unit_notes, market_rent_overrides, broker_map,
                     output_path, logo_path=None,
                     clickup_summaries_by_tenant=None,
-                    clickup_summaries_by_prop_unit=None):
+                    clickup_summaries_by_prop_unit=None,
+                    rem_comments_by_prop_unit=None,
+                    last_synced_by_prop_unit=None):
     """Build the Snap Shot workbook. `mapping` = property_mapping_all73.json
     contents. `rent_roll_by_property` = {appfolio_id_str: [unit_row, ...]}.
     `property_overrides` = {clickup_task_id: {broker_calls, property_flags,
@@ -1406,9 +1659,19 @@ def build_workbook(mapping, rent_roll_by_property, property_overrides,
     lists (Renewal/Vacancy/Documents Workflow). Used for occupied units.
     `clickup_summaries_by_prop_unit` = {(property_id_str, unit_label_str):
     summary_text} — from Vacancy list only. Used for vacant units.
+
+    Commit 2 additions:
+    `rem_comments_by_prop_unit` = {(pid_str, unit_label): comment_text} —
+    round-tripped from SharePoint col P plus mutated by sync_rem_comments;
+    populates col P (REM ClickUp Comment).
+    `last_synced_by_prop_unit` = {(pid_str, unit_label): stamp_string} —
+    from SharePoint col Q with fresh stamps for anything just synced; the
+    stamp format is "YYYY-MM-DD HH:MM ET · sha8:xxxxxxxx".
     """
     clickup_summaries_by_tenant = clickup_summaries_by_tenant or {}
     clickup_summaries_by_prop_unit = clickup_summaries_by_prop_unit or {}
+    rem_comments_by_prop_unit = rem_comments_by_prop_unit or {}
+    last_synced_by_prop_unit = last_synced_by_prop_unit or {}
     rr = rent_roll_by_property
 
     wb = openpyxl.Workbook()
@@ -1632,6 +1895,19 @@ def build_workbook(mapping, rent_roll_by_property, property_overrides,
         m["_market_rent_overrides"] = market_rent_overrides.get(af_id, {})
         m["_clickup_summaries_by_tenant"] = clickup_summaries_by_tenant
         m["_clickup_summaries_by_prop_unit"] = clickup_summaries_by_prop_unit
+        # Commit 2: filter the global (pid, unit_label) dicts down to just
+        # this property's entries, keyed by unit_label alone so
+        # write_property_block can do a simple .get(unit_label, "").
+        m["_rem_comments_by_unit"] = {
+            unit: text
+            for (pid, unit), text in rem_comments_by_prop_unit.items()
+            if str(pid) == str(af_id)
+        }
+        m["_last_synced_by_unit"] = {
+            unit: stamp
+            for (pid, unit), stamp in last_synced_by_prop_unit.items()
+            if str(pid) == str(af_id)
+        }
 
         row = write_property_block(ws, row, prop_name, prop_addr, units, m)
         row += 2
@@ -1897,6 +2173,13 @@ def write_property_block(ws, start_row, name, address, units, mapping_entry):
     market_rent_overrides = mapping_entry.get("_market_rent_overrides") or {}
     clickup_summaries_by_tenant = mapping_entry.get("_clickup_summaries_by_tenant") or {}
     clickup_summaries_by_prop_unit = mapping_entry.get("_clickup_summaries_by_prop_unit") or {}
+    # REM ClickUp Comment (col P) values, extracted from the previous
+    # SharePoint copy and keyed by unit_label (unit number as displayed).
+    # These are the REM-authored comments that either (a) already synced
+    # to ClickUp on this run and got a fresh "Last Synced" stamp, or (b)
+    # were unchanged since the last sync (so both P and Q pass through).
+    rem_comments_by_unit = mapping_entry.get("_rem_comments_by_unit") or {}
+    last_synced_by_unit = mapping_entry.get("_last_synced_by_unit") or {}
     prop_id_for_lookup = str(mapping_entry.get("appfolio_id") or "").strip()
     if not units:
         ws.row_dimensions[row].height = 18
@@ -1968,6 +2251,14 @@ def write_property_block(ws, start_row, name, address, units, mapping_entry):
                     (prop_id_for_lookup, str(unit_label).strip()), ""
                 )
 
+            # REM ClickUp Comment + Last Synced values (Commit 2). Both are
+            # keyed by unit_label. If the REM's comment already synced this
+            # run, the wire-up in run_build has already updated both dicts
+            # (comment text preserved, Last Synced timestamp refreshed). If
+            # it didn't sync (unchanged text or empty), both pass through.
+            rem_comment_val = rem_comments_by_unit.get(unit_label, "")
+            last_synced_val = last_synced_by_unit.get(unit_label, "")
+
             values = {
                 "Unit": unit_label,
                 "Tenant": u.get("Tenant") or ("\u2014 Vacant \u2014" if is_vacant else ""),
@@ -1983,6 +2274,8 @@ def write_property_block(ws, start_row, name, address, units, mapping_entry):
                 "Past Due": parse_currency(u.get("PastDue")),
                 "Notes": unit_note,
                 "ClickUp Summary": clickup_summary,
+                "REM ClickUp Comment": rem_comment_val,
+                "Last Synced": last_synced_val,
             }
 
             # Row-height priming for ClickUp Summary. Renewal/Vacancy return
@@ -1991,14 +2284,27 @@ def write_property_block(ws, start_row, name, address, units, mapping_entry):
             # (matches the Notes-column strategy above): setting a fixed
             # height would prevent Excel from auto-growing the row when
             # someone types more into the Notes cell later.
-            if clickup_summary and len(clickup_summary) > 60:
-                # ClickUp Summary column O is width 44. At 9pt Calibri that's
-                # ~55-60 chars per line. Count wrapped lines conservatively.
-                summ_lines = max(1, -(-len(clickup_summary) // 55))
+            if clickup_summary and len(clickup_summary) > 100:
+                # ClickUp Summary column O widened to 80 (Commit 2). At 9pt
+                # Calibri that's ~100 chars per visible line. Count wrapped
+                # lines conservatively.
+                summ_lines = max(1, -(-len(clickup_summary) // 100))
                 summ_lines += clickup_summary.count("\n")
                 # Only raise the height — don't lower one already set by the
                 # Notes column primer above.
                 needed_h = min(17 + (summ_lines - 1) * 14, 409)
+                existing_h = ws.row_dimensions[row].height or 0
+                if needed_h > existing_h:
+                    ws.row_dimensions[row].height = needed_h
+
+            # Row-height priming for REM ClickUp Comment (col P, width 40).
+            # If a long comment sits in P, we prime the row height like we
+            # do for ClickUp Summary so it renders wrapped on open.
+            if rem_comment_val and len(rem_comment_val) > 40:
+                # At 9pt Calibri, col-40 shows ~50 chars per line.
+                pcomm_lines = max(1, -(-len(rem_comment_val) // 50))
+                pcomm_lines += rem_comment_val.count("\n")
+                needed_h = min(17 + (pcomm_lines - 1) * 14, 409)
                 existing_h = ws.row_dimensions[row].height or 0
                 if needed_h > existing_h:
                     ws.row_dimensions[row].height = needed_h
@@ -2033,6 +2339,18 @@ def write_property_block(ws, start_row, name, address, units, mapping_entry):
                     # to distinguish visually from REM-editable columns.
                     cell.alignment = Alignment(horizontal="left", vertical="top", wrap_text=True, indent=1)
                     cell.font = Font(name=FONT_NAME, size=8, italic=True, color=SLATE)
+                elif col_label == "REM ClickUp Comment":
+                    # REM-editable. Full 9pt navy so it's visually distinct
+                    # from the muted ClickUp Summary next to it — signals
+                    # "this is where YOU type."
+                    cell.alignment = Alignment(horizontal="left", vertical="top", wrap_text=True, indent=1)
+                    cell.font = Font(name=FONT_NAME, size=9, color=NAVY_DEEP)
+                elif col_label == "Last Synced":
+                    # Read-only "receipt" cell. Small italic slate so REMs
+                    # can see "last synced at X" without it competing for
+                    # attention with the editable comment cell.
+                    cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True, indent=1)
+                    cell.font = Font(name=FONT_NAME, size=8, italic=True, color=SLATE)
                 elif col_label == "Tenant ID":
                     cell.alignment = Alignment(horizontal="center", vertical="center")
                 else:
@@ -2046,6 +2364,14 @@ def write_property_block(ws, start_row, name, address, units, mapping_entry):
                 elif col_label == "ClickUp Summary":
                     # Very light neutral tint so it reads as "informational,
                     # not-for-editing" without competing with the Notes column.
+                    cell.fill = fill("F5F6F8")
+                elif col_label == "REM ClickUp Comment":
+                    # Same warm gray as Notes — signals "REM edits here",
+                    # matches the existing REM-editable Notes convention.
+                    cell.fill = fill(GRAY_LIGHT)
+                elif col_label == "Last Synced":
+                    # Same faint tint as ClickUp Summary — both are
+                    # informational read-outs from the sync.
                     cell.fill = fill("F5F6F8")
             row += 1
 
@@ -2118,6 +2444,10 @@ def write_property_block(ws, start_row, name, address, units, mapping_entry):
 
         ws[f"{c_notes}{row}"] = ""
         ws[f"{c_summary}{row}"] = ""
+        # Commit 2 additions — REM Comment (P) and Last Synced (Q) are
+        # per-unit columns; the TOTALS row leaves them blank.
+        ws[f"{COLS['REM ClickUp Comment']}{row}"] = ""
+        ws[f"{COLS['Last Synced']}{row}"] = ""
 
         row += 1
 
@@ -2147,8 +2477,16 @@ def run_build(mode, dry_run):
 
     # Step 2: extract Ann's edits (fallback to bundled JSON on first run / dry-run).
     market_rent_overrides = {}
+    rem_comments_by_prop_unit = {}
+    last_synced_by_prop_unit = {}
     if current_wb_bytes:
-        prop_overrides_by_pid, unit_notes_by_key, market_rent_by_pid = extract_ann_edits(current_wb_bytes)
+        (
+            prop_overrides_by_pid,
+            unit_notes_by_key,
+            market_rent_by_pid,
+            rem_comments_by_prop_unit,
+            last_synced_by_prop_unit,
+        ) = extract_ann_edits(current_wb_bytes)
         property_overrides = reindex_overrides_by_clickup_task(prop_overrides_by_pid, mapping)
         market_rent_overrides = market_rent_by_pid
         # unit_notes re-indexing needs the fresh rent roll, done after step 3 below.
@@ -2177,11 +2515,38 @@ def run_build(mode, dry_run):
     # down or the token is wrong, individual list fetches will log warnings
     # and skip, and the workbook will render with empty ClickUp Summary
     # cells rather than crashing the whole build.
+    #
+    # Commit 2: pull_lar_summaries now also returns task-id indexes so the
+    # REM ClickUp Comment sync can post to every matching task.
     try:
-        clickup_summaries_by_tenant, clickup_summaries_by_prop_unit = pull_lar_summaries()
+        (
+            clickup_summaries_by_tenant,
+            clickup_summaries_by_prop_unit,
+            task_ids_by_tenant_id,
+            task_ids_by_prop_unit,
+        ) = pull_lar_summaries()
     except Exception as e:  # noqa: BLE001
         LOG.warning(f"LAR summaries pull failed — continuing with empty summaries: {e}")
         clickup_summaries_by_tenant, clickup_summaries_by_prop_unit = {}, {}
+        task_ids_by_tenant_id, task_ids_by_prop_unit = {}, {}
+
+    # Step 4c (Commit 2): sync REM-authored comments (col P) to ClickUp.
+    # Diff-detect via the sha8 hash in the paired Last Synced cell (col Q).
+    # Only posts when the comment text actually changed. Non-fatal: any
+    # per-unit failure is logged and the workbook still rebuilds so REMs
+    # don't lose visibility of their own draft comments.
+    try:
+        last_synced_by_prop_unit = sync_rem_comments_to_clickup(
+            mapping=mapping,
+            rem_comments_by_prop_unit=rem_comments_by_prop_unit,
+            last_synced_by_prop_unit=last_synced_by_prop_unit,
+            task_ids_by_tenant_id=task_ids_by_tenant_id,
+            task_ids_by_prop_unit=task_ids_by_prop_unit,
+            rent_roll_by_property=rent_roll_by_property,
+            dry_run=dry_run,
+        )
+    except Exception as e:  # noqa: BLE001
+        LOG.warning(f"REM comment sync failed — continuing without posting: {e}")
 
     # Step 5: rebuild workbook.
     output_filename = "Leasing-Snap-Shot-dryrun.xlsx" if dry_run else "Leasing-Snap-Shot.xlsx"
@@ -2197,6 +2562,8 @@ def run_build(mode, dry_run):
         logo_path=LOGO_PATH,
         clickup_summaries_by_tenant=clickup_summaries_by_tenant,
         clickup_summaries_by_prop_unit=clickup_summaries_by_prop_unit,
+        rem_comments_by_prop_unit=rem_comments_by_prop_unit,
+        last_synced_by_prop_unit=last_synced_by_prop_unit,
     )
 
     # Step 6: upload to SharePoint (skip entirely for dry-run).
