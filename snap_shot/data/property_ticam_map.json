@@ -1,0 +1,16 @@
+{
+  "__comment__": "Maps Snap Shot AppFolio display name -> TICAM ClickUp dropdown option (list 901112111796, field 'Property (A/O)'). Only properties whose Snap Shot name doesn't already match a TICAM dropdown option verbatim are listed here — everything else falls back to exact name match. Entries with an array of two names are properties where TICAM has duplicate dropdown rows (see South Memorial); the fetcher will pick the first non-empty 2026 row, preferring 'confirmed' status.",
+  "Indian River Plaza": "Indian River",
+  "Moss Creek Village": "Moss Creek",
+  "Stratford Plaza (Cornerstone)": "Stratford Plaza (Cornerstone",
+  "Village Plaza (Hot Springs)": "Hot Springs Village",
+  "Village Shoppes of Destin": "Shoppes of Destin",
+  "Garner Plaza (Cornerstone)": "Garner Plaza",
+  "Lawyers Square (Mint Hill) (Cornerstone)": "Mint Hill (Cornerstone)",
+  "North Hill Crossing (Lenoir)": "Lenoir North Hills",
+  "Richland Plaza (Bloomington)": "Richland Plaza",
+  "Shops at Turner Hill (Lithonia)": "Lithonia Turner Hill",
+  "Shops of Schillinger": "Schillinger Shops",
+  "South Memorial Plaza (Tulsa)": ["South Memorial", "Tulsa Memorial"],
+  "South Shades Crest Station": "South Shades"
+}

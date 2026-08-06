@@ -2,6 +2,36 @@
 
 All notable changes to the Leasing automations repo. Newest at the top.
 
+## 2026-08-06 — Snap Shot: add 2026 TICAM (NNN) row per property (L2)
+
+- **File(s):** `snap_shot/rebuild.py`, `snap_shot/data/property_ticam_map.json` (new)
+- **Author:** Alexis Pattison
+- **Skill:** `prudent-snap-shot-rebuild` v1.1 → v1.2
+
+**Why.** Alexis asked for the annual NNN estimates (PGP CAM inc. admin fee, Tax, Insurance, Water, Assoc. Fee — per SF) to appear on each property block so brokers see the current pass-through economics without leaving the Snap Shot. Data source is the ClickUp "TICAM Rates" list (`901112111796`) filtered to Year=2026. Only the five per-SF fields she named are shown; blanks are omitted so we never render "$0.00".
+
+**What changed.**
+- Added `pull_ticam_rates_2026(snap_shot_property_names)` in `rebuild.py`. Discovers custom-field IDs by name via `GET /list/{TICAM_LIST_ID}/field` so a ClickUp field rename doesn't silently break the fetch. Filters to Year=="2026", drops rows where all five rate fields are None/0, resolves each row's property via `Property (A/O)` dropdown first with a fallback to the task's `name` field (most existing TICAM tasks don't have the dropdown set). Handles ClickUp's two `status` payload shapes (dict on REST v2 list-tasks; bare string on some paginated shapes). Non-fatal: any exception returns `{}` and the workbook still builds with "2026 TICAM: not published" everywhere.
+- Added `snap_shot/data/property_ticam_map.json` — Snap Shot name → TICAM dropdown name overrides for the 13 properties whose names don't already match verbatim, including a two-entry array for South Memorial (which has both "South Memorial" and "Tulsa Memorial" dropdown options pointing at the same asset).
+- Added `write_ticam_row(ws, row, ticam_data)` renderer. Writes one merged A:Q row with light-gray fill and navy 9-pt text just below the address/REM row. Format: `2026 TICAM · Confirmed: PGP CAM $X.XX  ·  Tax $X.XX  ·  Ins $X.XX  ·  Water $X.XX  ·  Assoc $X.XX    →  {clickup_url}`. When no 2026 row exists (or every rate is blank), renders `2026 TICAM: not published` in italic slate. The ClickUp URL is a live hyperlink.
+- Called `pull_ticam_rates_2026` from `run_build` and threaded `ticam_by_property` through `build_workbook` → mapping loop → `write_property_block` → `write_ticam_row`.
+- Updated `extract_ann_edits` to probe `block_start + 4` first (new layout: banner, address, TICAM, spacer, DEAL ACTIVITY) then fall back to `block_start + 3` (legacy pre-TICAM layout). Without this, the first rebuild after deploy would fail to extract Ann's edits from the current SharePoint copy.
+
+**What did not change.**
+- Ann's edit preservation (Ann Notes, Deal Activity 2, Broker Reported Rate, Market Rent, ROFR flags, LOI/lease dropdowns), REM ClickUp Comment sync, race-condition guard, DST behavior, nightly/weekly cron schedule — all untouched.
+- Only 2026 rates are shown; 2025 and 2027 rows are ignored.
+- The TICAM list itself is not written to — read-only.
+- The rebuild continues to succeed even if the TICAM list is inaccessible; the row falls back to "not published" everywhere.
+
+**Risk / rollback.**
+- Risk: low. Non-fatal fetch (returns `{}` on any error); every write is inside `write_property_block` and only adds one visible row per property.
+- Rollback: revert this commit. The `extract_ann_edits` offset probe (+4 then +3) is designed to tolerate reading old SharePoint copies uploaded before this deploy, so the rollback is safe even mid-cycle.
+
+**Verification.**
+- Local smoke test with 7 mock tasks + 6 Snap Shot names covers: dropdown-set match (Ashcroft), task-name fallback (Amberwood — the live payload has no dropdown value), 2025 row filtered out, all-zero row omitted, South Memorial dupe-dropdown reconciled to the confirmed row, Stratford Plaza mapping-file reconciles missing paren. All six assertions pass.
+- `python3 -m py_compile snap_shot/rebuild.py` — clean.
+- After merge, trigger `Snap Shot — nightly rebuild` with `force_rebuild=true` and open the resulting workbook in SharePoint. Expect one TICAM row directly below each property banner. Amberwood Plaza should show `PGP CAM $3.40  ·  Tax $1.03  ·  Ins $0.43` and link to task `868k4u5ab`. Properties without a 2026 task (e.g. Barker Cypress Marketplace at time of writing) should show "2026 TICAM: not published".
+
 ## 2026-08-06 — Snap Shot: move nightly + weekly crons off the :00 slot (L2)
 
 - **File(s):** `.github/workflows/snap-shot-nightly.yml`, `.github/workflows/snap-shot-weekly.yml`

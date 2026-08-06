@@ -118,6 +118,14 @@ MAPPING_PATH = os.path.join(DATA_DIR, "property_mapping_all73.json")
 BROKER_CONTACTS_PATH = os.path.join(DATA_DIR, "broker_contacts_by_property.json")
 NOTES_OVERRIDES_FALLBACK_PATH = os.path.join(DATA_DIR, "property_notes_overrides.json")
 UNIT_NOTES_FALLBACK_PATH = os.path.join(DATA_DIR, "notes_by_unit.json")
+TICAM_MAP_PATH = os.path.join(DATA_DIR, "property_ticam_map.json")
+
+# ClickUp TICAM Rates list — https://app.clickup.com/14147033/v/li/901112111796
+# One task per (Property, Year). Year is a dropdown custom field. Rates live in
+# per-SF formula fields; underlying $ fields are also readable. Field IDs are
+# discovered at runtime from the list schema so a field rename in ClickUp
+# doesn't silently break the pull — we look up by field name.
+TICAM_LIST_ID = "901112111796"
 LOGO_PATH = os.path.join(DATA_DIR, "pgp_logo.png")
 
 DRY_RUN_OUTPUT_PATH = "/tmp/Leasing-Snap-Shot-dryrun.xlsx"
@@ -704,6 +712,230 @@ def pull_lar_summaries():
         task_ids_by_tenant_id,
         task_ids_by_prop_unit,
     )
+
+
+# ─── TICAM Rates (2026) ───────────────────────────────────────────────
+#
+# The Snap Shot displays per-SF NNN rates for the 2026 lease year just below
+# each property banner. Data source: ClickUp list "TICAM Rates" (901112111796),
+# one task per (Property × Year). We only surface 2026 rows here.
+#
+# Property name matching: the TICAM "Property (A/O)" dropdown does not use the
+# same names as the Snap Shot AppFolio names, so property_ticam_map.json maps
+# Snap Shot name → TICAM dropdown label (or list of labels for the one property
+# where TICAM has two dropdown rows for the same asset — South Memorial Plaza
+# (Tulsa)). Anything not in the map is assumed to match by exact name.
+#
+# Fields surfaced (only when populated — zero/None values are dropped from the
+# rendered line so nothing shows up as "$0.00"):
+#   • PGP CAM (incl. 15% admin fee)   — formula field "PGP CAM / SF (Inc. Admin Fee)"
+#   • Tax / SF                         — formula field "Taxes / SF"
+#   • Insurance / SF                   — formula field "Insurance / SF"
+#   • Water / SF                       — formula field "Water / SF"
+#   • Assoc. Fee / SF                  — formula field "Assoc. Fee / SF"
+# Plus the ClickUp task URL (for click-through) and the confirmed/unconfirmed
+# status (so brokers know whether the numbers are final).
+#
+# Non-fatal: if the ClickUp fetch fails, TICAM rows are simply omitted from
+# the workbook — the rest of the build still succeeds.
+
+# Field-name → payload-key mapping. We look up field IDs at runtime rather
+# than hardcoding them, so a rename in the ClickUp UI won't silently blank
+# out the column.
+_TICAM_FIELD_NAMES = {
+    "pgp_cam_per_sf":  "PGP CAM / SF (Inc. Admin Fee)",
+    "tax_per_sf":      "Taxes / SF",
+    "insurance_per_sf":"Insurance / SF",
+    "water_per_sf":    "Water / SF",
+    "assoc_fee_per_sf":"Assoc. Fee / SF",
+    "year":            "Year",
+    "property":        "Property (A/O) ",  # NOTE: trailing space in ClickUp field name
+}
+
+
+def _ticam_field_value(task, field_id):
+    """Extract a custom-field value from a ClickUp task by field ID.
+    Returns None if the field is missing or has no value."""
+    for cf in task.get("custom_fields", []):
+        if cf.get("id") != field_id:
+            continue
+        val = cf.get("value")
+        if val is None or val == "":
+            return None
+        return val
+    return None
+
+
+def _ticam_number(task, field_id):
+    """Read a numeric or currency custom-field. ClickUp returns numbers as
+    strings sometimes; formula fields return floats. Returns None if
+    unpopulated, zero, or unparseable — zero counts as unpopulated because
+    we don't want '$0.00' rows on the workbook."""
+    val = _ticam_field_value(task, field_id)
+    if val is None:
+        return None
+    try:
+        n = float(val)
+    except (TypeError, ValueError):
+        return None
+    if n == 0:
+        return None
+    return n
+
+
+def _ticam_dropdown_name(task, field_id, options_by_id):
+    """Resolve a dropdown value to its human name. ClickUp returns dropdown
+    values as the option UUID (or index, depending on the field version).
+    We look up in options_by_id, which was pre-built from the field schema."""
+    val = _ticam_field_value(task, field_id)
+    if val is None:
+        return None
+    return options_by_id.get(str(val)) or options_by_id.get(val)
+
+
+def pull_ticam_rates_2026(snap_shot_property_names):
+    """Fetch 2026 TICAM rates from ClickUp list 901112111796 and return a
+    dict keyed by Snap Shot property name:
+
+        {
+          "Amberwood Plaza": {
+            "pgp_cam_per_sf": 2.70, "tax_per_sf": 1.10, "insurance_per_sf": 0.42,
+            "water_per_sf": 0.18, "assoc_fee_per_sf": None,
+            "status": "confirmed",
+            "url": "https://app.clickup.com/t/868k4u5ab",
+          },
+          ...
+        }
+
+    Properties with no 2026 row (or all fields blank) are omitted. Never
+    raises — catches all exceptions and returns {} on failure so a broken
+    ClickUp fetch doesn't break the whole workbook build.
+
+    snap_shot_property_names: iterable of Snap Shot AppFolio display names
+    (used to key the returned dict and to warn about unmapped properties).
+    """
+    try:
+        # Step 1: discover custom-field IDs by name.
+        r = http_request(
+            "GET", f"{CU_BASE}/list/{TICAM_LIST_ID}/field",
+            context=f"ClickUp TICAM list {TICAM_LIST_ID} fields",
+            headers=cu_headers(),
+        )
+        if r.status_code != 200:
+            LOG.warning(f"TICAM field schema fetch failed HTTP {r.status_code}; omitting TICAM rows.")
+            return {}
+        fields = r.json().get("fields", [])
+        field_id_by_name = {f["name"]: f["id"] for f in fields}
+
+        # Resolve every field we need. If any core field is missing, bail.
+        try:
+            fid = {k: field_id_by_name[v] for k, v in _TICAM_FIELD_NAMES.items()}
+        except KeyError as ke:
+            LOG.warning(f"TICAM list is missing expected field {ke!s}; omitting TICAM rows.")
+            return {}
+
+        # Build dropdown-option lookup for Year + Property fields.
+        year_options = {}
+        prop_options = {}
+        for f in fields:
+            if f["id"] == fid["year"]:
+                for opt in (f.get("type_config") or {}).get("options", []):
+                    year_options[opt["id"]] = opt["name"]
+                    year_options[str(opt.get("orderindex"))] = opt["name"]
+            elif f["id"] == fid["property"]:
+                for opt in (f.get("type_config") or {}).get("options", []):
+                    prop_options[opt["id"]] = opt["name"]
+                    prop_options[str(opt.get("orderindex"))] = opt["name"]
+
+        # Step 2: fetch all tasks in the list.
+        tasks = cu_get_list_tasks(TICAM_LIST_ID, include_closed="true")
+        LOG.info(f"TICAM pull: fetched {len(tasks)} tasks from list {TICAM_LIST_ID}.")
+
+        # Step 3: index tasks by TICAM property name, keeping only 2026 rows.
+        # A property can have multiple 2026 rows (rare, but South Memorial has
+        # two dropdown entries pointing at the same asset). We keep them all
+        # and later pick per-Snap-Shot-property.
+        #
+        # Property matching is best-effort in two layers:
+        #   1. Prefer the 'Property (A/O)' dropdown value (canonical).
+        #   2. Fall back to the task name — many older TICAM tasks were
+        #      created before the dropdown existed and only carry the
+        #      property in the task's name field. We index against both
+        #      candidates so the mapping file can point at either label.
+        rows_by_ticam_name = {}
+        for t in tasks:
+            year_label = _ticam_dropdown_name(t, fid["year"], year_options)
+            if year_label != "2026":
+                continue
+            prop_label = _ticam_dropdown_name(t, fid["property"], prop_options)
+            task_name = (t.get("name") or "").strip()
+            # Use dropdown if set, otherwise the task name; index BOTH so
+            # downstream lookup can hit either.
+            labels_for_task = set()
+            if prop_label:
+                labels_for_task.add(prop_label)
+            if task_name:
+                labels_for_task.add(task_name)
+            if not labels_for_task:
+                continue
+            row = {
+                "pgp_cam_per_sf":   _ticam_number(t, fid["pgp_cam_per_sf"]),
+                "tax_per_sf":       _ticam_number(t, fid["tax_per_sf"]),
+                "insurance_per_sf": _ticam_number(t, fid["insurance_per_sf"]),
+                "water_per_sf":     _ticam_number(t, fid["water_per_sf"]),
+                "assoc_fee_per_sf": _ticam_number(t, fid["assoc_fee_per_sf"]),
+                # ClickUp REST v2 returns status as {"status":"confirmed", ...};
+                # some paginated shapes / mocks return it as a bare string.
+                "status":           (t["status"].get("status") if isinstance(t.get("status"), dict) else (t.get("status") or "")) or "",
+                "url":              t.get("url") or "",
+            }
+            # Drop tasks with no populated rate fields — nothing to render.
+            if not any(row[k] is not None for k in
+                       ("pgp_cam_per_sf", "tax_per_sf", "insurance_per_sf",
+                        "water_per_sf", "assoc_fee_per_sf")):
+                continue
+            for lbl in labels_for_task:
+                rows_by_ticam_name.setdefault(lbl, []).append(row)
+
+        # Step 4: apply the Snap-Shot-name → TICAM-name map and key by
+        # Snap Shot name for downstream lookup.
+        ticam_map = load_json(TICAM_MAP_PATH, required=False, default={})
+        # Strip out the __comment__ key if present.
+        ticam_map = {k: v for k, v in ticam_map.items() if not k.startswith("__")}
+
+        rates_by_snap_shot_name = {}
+        unmatched = []
+        for ss_name in snap_shot_property_names:
+            candidate_labels = ticam_map.get(ss_name, ss_name)
+            if isinstance(candidate_labels, str):
+                candidate_labels = [candidate_labels]
+            # Collect all rows across the candidate labels.
+            all_rows = []
+            for lbl in candidate_labels:
+                all_rows.extend(rows_by_ticam_name.get(lbl, []))
+            if not all_rows:
+                unmatched.append(ss_name)
+                continue
+            # Prefer 'confirmed' status; if none, use the first row.
+            confirmed = [r for r in all_rows if r["status"] == "confirmed"]
+            picked = confirmed[0] if confirmed else all_rows[0]
+            if len(all_rows) > 1 and len(set(r["url"] for r in all_rows)) > 1:
+                LOG.info(
+                    f"TICAM: {ss_name!r} matched {len(all_rows)} 2026 rows across "
+                    f"{candidate_labels}; picked status={picked['status']!r}."
+                )
+            rates_by_snap_shot_name[ss_name] = picked
+
+        LOG.info(
+            f"TICAM pull totals: {len(rates_by_snap_shot_name)} properties with 2026 rates; "
+            f"{len(unmatched)} properties without a 2026 row."
+        )
+        if unmatched and len(unmatched) <= 20:
+            LOG.info(f"TICAM: no 2026 row for: {sorted(unmatched)}")
+        return rates_by_snap_shot_name
+    except Exception as e:  # noqa: BLE001
+        LOG.warning(f"TICAM pull failed — omitting TICAM rows: {e}")
+        return {}
 
 
 # ─── REM ClickUp Comment sync (Commit 2) ───────────────────────────────────
@@ -1426,9 +1658,17 @@ def extract_ann_edits(workbook_bytes):
         block_start = row
 
         try:
-            # DEAL ACTIVITY & NOTES header should be at block_start + 3
-            header_row = block_start + 3
+            # DEAL ACTIVITY & NOTES header should be at block_start + 4
+            # (banner, address, TICAM row, blank spacer, DEAL ACTIVITY).
+            # Before the 2026 TICAM row was added it lived at block_start + 3;
+            # we probe both offsets so the extractor keeps working against
+            # older SharePoint copies uploaded before the TICAM row shipped.
+            header_row = block_start + 4
             header_text = cell_text(header_row, "B")
+            if not header_text.upper().startswith("DEAL ACTIVITY"):
+                # Legacy pre-TICAM layout — fall back to the old offset.
+                header_row = block_start + 3
+                header_text = cell_text(header_row, "B")
             notes_start = header_row + 1 if header_text.upper().startswith("DEAL ACTIVITY") else header_row
 
             notes = {}
@@ -1645,7 +1885,8 @@ def build_workbook(mapping, rent_roll_by_property, property_overrides,
                     clickup_summaries_by_tenant=None,
                     clickup_summaries_by_prop_unit=None,
                     rem_comments_by_prop_unit=None,
-                    last_synced_by_prop_unit=None):
+                    last_synced_by_prop_unit=None,
+                    ticam_by_property=None):
     """Build the Snap Shot workbook. `mapping` = property_mapping_all73.json
     contents. `rent_roll_by_property` = {appfolio_id_str: [unit_row, ...]}.
     `property_overrides` = {clickup_task_id: {broker_calls, property_flags,
@@ -1908,6 +2149,10 @@ def build_workbook(mapping, rent_roll_by_property, property_overrides,
             for (pid, unit), stamp in last_synced_by_prop_unit.items()
             if str(pid) == str(af_id)
         }
+        # 2026 TICAM rates keyed by Snap Shot AppFolio display name (see
+        # pull_ticam_rates_2026). None → no 2026 row on ClickUp → write_ticam_row
+        # renders "2026 TICAM: not published".
+        m["_ticam_2026"] = (ticam_by_property or {}).get(prop_name)
 
         row = write_property_block(ws, row, prop_name, prop_addr, units, m)
         row += 2
@@ -1936,6 +2181,66 @@ def build_workbook(mapping, rent_roll_by_property, property_overrides,
     wb.save(output_path)
     LOG.info(f"Saved workbook: {output_path}")
     return output_path
+
+
+def write_ticam_row(ws, row, ticam_data):
+    """Render one merged A:Q row with the property's 2026 TICAM (NNN) rates,
+    just below the property banner + address row. Returns the next row.
+
+    ticam_data shape (from pull_ticam_rates_2026):
+        {'pgp_cam_per_sf': float|None, 'tax_per_sf': float|None,
+         'insurance_per_sf': float|None, 'water_per_sf': float|None,
+         'assoc_fee_per_sf': float|None,
+         'status': 'confirmed'|'unconfirmed'|..., 'url': str}
+    or None if no 2026 row exists for this property.
+    """
+    ws.row_dimensions[row].height = 16
+    ws.merge_cells(f"{FIRST_COL}{row}:{LAST_COL}{row}")
+    cell = ws[f"{FIRST_COL}{row}"]
+    cell.fill = fill(GRAY_LIGHT)
+    cell.alignment = Alignment(horizontal="left", vertical="center", indent=1)
+
+    if not ticam_data:
+        cell.value = "2026 TICAM: not published"
+        cell.font = Font(name=FONT_NAME, size=9, italic=True, color=SLATE)
+        return row + 1
+
+    # Build the human-readable piece — only include populated fields so we
+    # never render a bare "$0.00".
+    parts = []
+    labels = [
+        ("pgp_cam_per_sf",   "PGP CAM"),
+        ("tax_per_sf",       "Tax"),
+        ("insurance_per_sf", "Ins"),
+        ("water_per_sf",     "Water"),
+        ("assoc_fee_per_sf", "Assoc"),
+    ]
+    for key, label in labels:
+        val = ticam_data.get(key)
+        if val is None:
+            continue
+        parts.append(f"{label} ${val:,.2f}")
+
+    if not parts:
+        # Task exists but every rate field is blank/zero — treat as unpublished.
+        cell.value = "2026 TICAM: not published"
+        cell.font = Font(name=FONT_NAME, size=9, italic=True, color=SLATE)
+        return row + 1
+
+    status_raw = (ticam_data.get("status") or "").strip().lower()
+    status_label = "Confirmed" if status_raw == "confirmed" else "Unconfirmed"
+    line = f"2026 TICAM \u00b7 {status_label}: " + "  \u00b7  ".join(parts)
+    url = (ticam_data.get("url") or "").strip()
+    if url:
+        line += f"    \u2192  {url}"
+        cell.hyperlink = url
+
+    cell.value = line
+    # Bold the leading "2026 TICAM · {status}:" is not doable inside a
+    # merged single-cell without RichText. Keep the row visually calm and
+    # let the light-gray fill + navy text signal it as metadata.
+    cell.font = Font(name=FONT_NAME, size=9, color=NAVY_DEEP)
+    return row + 1
 
 
 def write_property_block(ws, start_row, name, address, units, mapping_entry):
@@ -1995,6 +2300,14 @@ def write_property_block(ws, start_row, name, address, units, mapping_entry):
     rem_cell.fill = fill(BLUE_MID)
     rem_cell.alignment = Alignment(horizontal="right", vertical="center", indent=1)
     row += 1
+
+    # 2026 TICAM (NNN) rates row — one merged line spanning A:Q. Rendered
+    # from mapping_entry['_ticam_2026'] which pull_ticam_rates_2026() built
+    # off the ClickUp TICAM Rates list. Only shows populated fields so
+    # nothing displays as "$0.00"; a missing 2026 task renders as a
+    # muted "not published" line so REMs / brokers know it's absent, not
+    # simply a build error.
+    row = write_ticam_row(ws, row, mapping_entry.get("_ticam_2026"))
 
     row += 1  # blank spacer
 
@@ -2548,6 +2861,16 @@ def run_build(mode, dry_run):
     except Exception as e:  # noqa: BLE001
         LOG.warning(f"REM comment sync failed — continuing without posting: {e}")
 
+    # Step 4d: pull 2026 TICAM rates from ClickUp TICAM Rates list. Runs on
+    # every mode. Non-fatal — failure returns {} and the TICAM row falls
+    # back to "2026 TICAM: not published" everywhere. Keyed by Snap Shot
+    # AppFolio display name (prop_name used inside the mapping loop).
+    snap_shot_prop_names = [
+        (m.get("appfolio_name") or m.get("excel_name") or m.get("clickup_task_name"))
+        for m in mapping
+    ]
+    ticam_by_property = pull_ticam_rates_2026(snap_shot_prop_names)
+
     # Step 5: rebuild workbook.
     output_filename = "Leasing-Snap-Shot-dryrun.xlsx" if dry_run else "Leasing-Snap-Shot.xlsx"
     output_path = os.path.join(LOCAL_BUILD_DIR if not dry_run else "/tmp", output_filename)
@@ -2564,6 +2887,7 @@ def run_build(mode, dry_run):
         clickup_summaries_by_prop_unit=clickup_summaries_by_prop_unit,
         rem_comments_by_prop_unit=rem_comments_by_prop_unit,
         last_synced_by_prop_unit=last_synced_by_prop_unit,
+        ticam_by_property=ticam_by_property,
     )
 
     # Step 6: upload to SharePoint (skip entirely for dry-run).
