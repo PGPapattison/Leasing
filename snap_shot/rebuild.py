@@ -145,6 +145,43 @@ BROKER_BEAT_TASK_PREFIX = os.environ.get(
     "SNAP_SHOT_BROKER_BEAT_PREFIX", "Weekly Broker Update"
 )
 
+# ---- LAR (Leasing / Asset Management) lists ---------------------------------
+# Three ClickUp lists whose "Summary" (AI-generated) field is round-tripped
+# into the Snap Shot RENT ROLL's rightmost "ClickUp Summary" column so REMs
+# see the current AI summary next to each unit at a glance.
+#
+# Match order (first match wins):
+#   1. Occupied unit (TenantId present) → lookup by Tenant ID across:
+#         Renewal Pipeline, Vacancy Pipeline, Documents Workflow
+#   2. Vacant unit (no TenantId)        → lookup by (Property ID + Unit #)
+#         in Vacancy Pipeline only
+#
+# The Summary custom-field ID is NOT the same across all three lists. Renewal
+# and Vacancy share one ID; Documents Workflow has its own. We keep a
+# {list_id → summary_field_id} map so callers don't have to guess.
+LAR_RENEWAL_LIST_ID = os.environ.get("CLICKUP_LAR_RENEWAL_LIST_ID", "901113575567")
+LAR_VACANCY_LIST_ID = os.environ.get("CLICKUP_LAR_VACANCY_LIST_ID", "901113575628")
+LAR_DOCS_WORKFLOW_LIST_ID = os.environ.get("CLICKUP_LAR_DOCS_WORKFLOW_LIST_ID", "901113991446")
+
+# Custom-field IDs shared across all three LAR lists (short_text).
+CU_TENANT_ID_FIELD = os.environ.get(
+    "CLICKUP_TENANT_ID_FIELD", "2f9249fb-d19b-470b-8bb4-b11eb9eb5cb8"
+)
+CU_PROPERTY_ID_FIELD = os.environ.get(
+    "CLICKUP_PROPERTY_ID_FIELD", "057285dd-5010-4336-916f-06888b1514e5"
+)
+# Vacancy Pipeline only.
+CU_UNIT_NUMBER_FIELD = os.environ.get(
+    "CLICKUP_UNIT_NUMBER_FIELD", "0acf8068-1620-4238-b19c-69f912cc710d"
+)
+
+# Per-list Summary field IDs (differ between Renewal/Vacancy and Documents).
+LAR_SUMMARY_FIELD_BY_LIST = {
+    LAR_RENEWAL_LIST_ID: "93833d96-e254-4402-b672-30ab8fb45ccd",
+    LAR_VACANCY_LIST_ID: "93833d96-e254-4402-b672-30ab8fb45ccd",
+    LAR_DOCS_WORKFLOW_LIST_ID: "190e6156-36bf-47d5-b10b-ea6f9809bc6c",
+}
+
 # ---- SharePoint / Microsoft Graph -------------------------------------------
 MS_TENANT_ID = os.environ.get("MS_TENANT_ID", "b2a05ba0-a5ea-4518-8560-c9d2b631798d")
 MS_CLIENT_ID = os.environ.get("MS_CLIENT_ID", "d4aec1ec-50cc-46ee-b17e-dddedb03513b")
@@ -534,6 +571,103 @@ def cu_get_list(list_id):
     )
     r.raise_for_status()
     return r.json()
+
+
+def _cu_field_value(task, field_id):
+    """Return the raw `value` for a custom field on a ClickUp task, or None.
+    ClickUp represents unset short_text as absence-of-value or empty string;
+    we normalize both to None so callers can treat 'no value' uniformly."""
+    for f in task.get("custom_fields", []) or []:
+        if f.get("id") == field_id:
+            v = f.get("value")
+            if v is None:
+                return None
+            if isinstance(v, str) and not v.strip():
+                return None
+            return v
+    return None
+
+
+def pull_lar_summaries():
+    """Pull the AI-generated Summary custom field from every task in each of
+    the three LAR lists (Renewal Pipeline, Vacancy Pipeline, Documents
+    Workflow) and return two indexes:
+
+        by_tenant_id   = {tenant_id_str: summary_text}
+        by_prop_unit   = {(property_id_str, unit_num_str): summary_text}
+
+    Match precedence when multiple lists share the same key:
+        Renewal > Vacancy > Documents Workflow
+    (Renewal is preferred because it typically reflects the most recent AI
+    read of the tenant's current renewal state; Vacancy applies when a unit
+    is on the vacancy board; Documents Workflow is a fallback for tenants
+    that only appear in the docs pipeline.)
+
+    Tenant IDs and Property IDs are normalized to str() with surrounding
+    whitespace stripped; unit numbers likewise. Empty summaries are dropped
+    (no point in overwriting a cell with a blank string).
+    """
+    # Order matters — first list wins for tenant-id collisions.
+    list_order = [
+        ("Renewal Pipeline", LAR_RENEWAL_LIST_ID),
+        ("Vacancy Pipeline", LAR_VACANCY_LIST_ID),
+        ("Documents Workflow", LAR_DOCS_WORKFLOW_LIST_ID),
+    ]
+
+    by_tenant_id = {}
+    by_prop_unit = {}
+    summary_field_by_list = LAR_SUMMARY_FIELD_BY_LIST
+
+    for list_label, list_id in list_order:
+        try:
+            tasks = cu_get_list_tasks(list_id, include_closed="true")
+        except FatalError as e:
+            LOG.warning(f"LAR pull: {list_label} ({list_id}) fetch failed: {e}. Skipping this list.")
+            continue
+
+        summary_field = summary_field_by_list.get(list_id)
+        if not summary_field:
+            LOG.warning(f"LAR pull: no Summary field ID configured for list {list_id}. Skipping.")
+            continue
+
+        added_by_tid = 0
+        added_by_pu = 0
+        for t in tasks:
+            summary = _cu_field_value(t, summary_field)
+            if not summary or not str(summary).strip():
+                continue
+            summary_text = str(summary).strip()
+
+            tid_raw = _cu_field_value(t, CU_TENANT_ID_FIELD)
+            if tid_raw is not None:
+                tid = str(tid_raw).strip()
+                if tid and tid not in by_tenant_id:
+                    by_tenant_id[tid] = summary_text
+                    added_by_tid += 1
+
+            # Vacancy list also gets indexed by (property_id, unit_num) so
+            # vacant units without a Tenant ID can still get matched.
+            if list_id == LAR_VACANCY_LIST_ID:
+                pid_raw = _cu_field_value(t, CU_PROPERTY_ID_FIELD)
+                unit_raw = _cu_field_value(t, CU_UNIT_NUMBER_FIELD)
+                if pid_raw is not None and unit_raw is not None:
+                    pid = str(pid_raw).strip()
+                    unit = str(unit_raw).strip()
+                    key = (pid, unit)
+                    if pid and unit and key not in by_prop_unit:
+                        by_prop_unit[key] = summary_text
+                        added_by_pu += 1
+
+        LOG.info(
+            f"LAR pull: {list_label} — {len(tasks)} tasks, "
+            f"+{added_by_tid} by TenantId, +{added_by_pu} by (PropertyId,Unit)."
+        )
+
+    LOG.info(
+        f"LAR pull totals: {len(by_tenant_id)} summaries indexed by Tenant ID, "
+        f"{len(by_prop_unit)} by (PropertyId, Unit#)."
+    )
+    return by_tenant_id, by_prop_unit
 
 
 def _build_refresh_section(sharepoint_url, mode):
@@ -1240,10 +1374,15 @@ COLS = {
     "Status": "L",
     "Past Due": "M",
     "Notes": "N",
+    # Read-only ClickUp AI Summary from the LAR lists (Renewal/Vacancy/Docs).
+    # Populated nightly from ClickUp → Excel; nothing round-trips out of this
+    # column back to ClickUp. Ann's edits are not expected here; extract_ann_edits
+    # deliberately does NOT read this column.
+    "ClickUp Summary": "O",
 }
 COL_WIDTHS = {"A": 3, "B": 20, "C": 26, "D": 10, "E": 9, "F": 11, "G": 8, "H": 11,
-              "I": 11, "J": 11, "K": 11, "L": 15, "M": 11, "N": 34}
-LAST_COL = "N"
+              "I": 11, "J": 11, "K": 11, "L": 15, "M": 11, "N": 34, "O": 44}
+LAST_COL = "O"
 FIRST_COL = "B"
 
 STATE_RE = re.compile(r",\s*([A-Z]{2})\s+\d{5}")
@@ -1251,7 +1390,9 @@ STATE_RE = re.compile(r",\s*([A-Z]{2})\s+\d{5}")
 
 def build_workbook(mapping, rent_roll_by_property, property_overrides,
                     unit_notes, market_rent_overrides, broker_map,
-                    output_path, logo_path=None):
+                    output_path, logo_path=None,
+                    clickup_summaries_by_tenant=None,
+                    clickup_summaries_by_prop_unit=None):
     """Build the Snap Shot workbook. `mapping` = property_mapping_all73.json
     contents. `rent_roll_by_property` = {appfolio_id_str: [unit_row, ...]}.
     `property_overrides` = {clickup_task_id: {broker_calls, property_flags,
@@ -1261,7 +1402,13 @@ def build_workbook(mapping, rent_roll_by_property, property_overrides,
     round-tripped from SharePoint; AppFolio has no market-rent field of its
     own for this column, so absent an override the cell is left blank
     exactly as in build_prototype_v3.
+    `clickup_summaries_by_tenant` = {tenant_id_str: summary_text} — from LAR
+    lists (Renewal/Vacancy/Documents Workflow). Used for occupied units.
+    `clickup_summaries_by_prop_unit` = {(property_id_str, unit_label_str):
+    summary_text} — from Vacancy list only. Used for vacant units.
     """
+    clickup_summaries_by_tenant = clickup_summaries_by_tenant or {}
+    clickup_summaries_by_prop_unit = clickup_summaries_by_prop_unit or {}
     rr = rent_roll_by_property
 
     wb = openpyxl.Workbook()
@@ -1483,6 +1630,8 @@ def build_workbook(mapping, rent_roll_by_property, property_overrides,
         m["_notes"] = property_overrides.get(cid, {})
         m["_unit_notes"] = unit_notes
         m["_market_rent_overrides"] = market_rent_overrides.get(af_id, {})
+        m["_clickup_summaries_by_tenant"] = clickup_summaries_by_tenant
+        m["_clickup_summaries_by_prop_unit"] = clickup_summaries_by_prop_unit
 
         row = write_property_block(ws, row, prop_name, prop_addr, units, m)
         row += 2
@@ -1530,8 +1679,15 @@ def write_property_block(ws, start_row, name, address, units, mapping_entry):
     cell.alignment = Alignment(horizontal="left", vertical="center", indent=1)
     row += 1
 
+    # Address / metadata row. Split into two merged regions so the REM name
+    # can sit right-justified on the same row (Alexis 2026-08-06). Both
+    # regions share the same BLUE_MID fill so the split is invisible.
+    #
+    # Layout:
+    #   B–K  →  "Property ID: NNN  ·  address  ·  tags"           (left)
+    #   L–O  →  "Real Estate Manager: {rem_name}"                  (right)
     ws.row_dimensions[row].height = 18
-    ws.merge_cells(f"{FIRST_COL}{row}:{LAST_COL}{row}")
+    ws.merge_cells(f"{FIRST_COL}{row}:K{row}")
     cell = ws[f"{FIRST_COL}{row}"]
     src_tags = []
     if mapping_entry.get("source") == "broker_only":
@@ -1547,6 +1703,21 @@ def write_property_block(ws, start_row, name, address, units, mapping_entry):
     cell.fill = fill(BLUE_MID)
     cell.font = Font(name=FONT_NAME, size=10, color=WHITE)
     cell.alignment = Alignment(horizontal="left", vertical="center", indent=1)
+
+    # Right-justified REM name on the same row. Falls back gracefully:
+    #   populated → "Real Estate Manager: Parker Owen"
+    #   unset    → "Real Estate Manager: —" (em-dash, italic-slate)
+    ws.merge_cells(f"L{row}:{LAST_COL}{row}")
+    rem_cell = ws[f"L{row}"]
+    rem_name = (mapping_entry.get("rem_name") or "").strip()
+    if rem_name:
+        rem_cell.value = f"Real Estate Manager: {rem_name}"
+        rem_cell.font = Font(name=FONT_NAME, size=10, color=WHITE, bold=True)
+    else:
+        rem_cell.value = "Real Estate Manager: \u2014"
+        rem_cell.font = Font(name=FONT_NAME, size=10, italic=True, color=WHITE)
+    rem_cell.fill = fill(BLUE_MID)
+    rem_cell.alignment = Alignment(horizontal="right", vertical="center", indent=1)
     row += 1
 
     row += 1  # blank spacer
@@ -1724,6 +1895,9 @@ def write_property_block(ws, start_row, name, address, units, mapping_entry):
 
     data_start_row = row
     market_rent_overrides = mapping_entry.get("_market_rent_overrides") or {}
+    clickup_summaries_by_tenant = mapping_entry.get("_clickup_summaries_by_tenant") or {}
+    clickup_summaries_by_prop_unit = mapping_entry.get("_clickup_summaries_by_prop_unit") or {}
+    prop_id_for_lookup = str(mapping_entry.get("appfolio_id") or "").strip()
     if not units:
         ws.row_dimensions[row].height = 18
         ws.merge_cells(f"{FIRST_COL}{row}:{LAST_COL}{row}")
@@ -1779,6 +1953,21 @@ def write_property_block(ws, start_row, name, address, units, mapping_entry):
             tenant_id_val = u.get("TenantId") if not is_vacant else ""
             unit_label = unit_display(u)
             market_rent_val = market_rent_overrides.get(unit_label, "")
+
+            # Look up ClickUp AI Summary for this unit.
+            # Precedence: Tenant ID first (occupied units); fall back to
+            # (Property ID, Unit #) for vacant units. Empty string → the
+            # rebuild leaves the cell visibly empty rather than showing a
+            # placeholder, so REMs can see at a glance which units have no
+            # active ClickUp task in the LAR pipeline.
+            clickup_summary = ""
+            if tenant_id_val:
+                clickup_summary = clickup_summaries_by_tenant.get(str(tenant_id_val).strip(), "")
+            if not clickup_summary and prop_id_for_lookup and unit_label:
+                clickup_summary = clickup_summaries_by_prop_unit.get(
+                    (prop_id_for_lookup, str(unit_label).strip()), ""
+                )
+
             values = {
                 "Unit": unit_label,
                 "Tenant": u.get("Tenant") or ("\u2014 Vacant \u2014" if is_vacant else ""),
@@ -1793,7 +1982,26 @@ def write_property_block(ws, start_row, name, address, units, mapping_entry):
                 "Status": status,
                 "Past Due": parse_currency(u.get("PastDue")),
                 "Notes": unit_note,
+                "ClickUp Summary": clickup_summary,
             }
+
+            # Row-height priming for ClickUp Summary. Renewal/Vacancy return
+            # a ~7-line bullet block; Documents Workflow returns ~4 lines.
+            # Only prime when the summary is long enough to force wrapping
+            # (matches the Notes-column strategy above): setting a fixed
+            # height would prevent Excel from auto-growing the row when
+            # someone types more into the Notes cell later.
+            if clickup_summary and len(clickup_summary) > 60:
+                # ClickUp Summary column O is width 44. At 9pt Calibri that's
+                # ~55-60 chars per line. Count wrapped lines conservatively.
+                summ_lines = max(1, -(-len(clickup_summary) // 55))
+                summ_lines += clickup_summary.count("\n")
+                # Only raise the height — don't lower one already set by the
+                # Notes column primer above.
+                needed_h = min(17 + (summ_lines - 1) * 14, 409)
+                existing_h = ws.row_dimensions[row].height or 0
+                if needed_h > existing_h:
+                    ws.row_dimensions[row].height = needed_h
 
             for col_label, col_letter in COLS.items():
                 cell = ws[f"{col_letter}{row}"]
@@ -1820,6 +2028,11 @@ def write_property_block(ws, start_row, name, address, units, mapping_entry):
                     cell.alignment = Alignment(horizontal="center", vertical="center")
                 elif col_label == "Notes":
                     cell.alignment = Alignment(horizontal="left", vertical="top", wrap_text=True, indent=1)
+                elif col_label == "ClickUp Summary":
+                    # Read-only from ClickUp, so smaller size + italic-slate
+                    # to distinguish visually from REM-editable columns.
+                    cell.alignment = Alignment(horizontal="left", vertical="top", wrap_text=True, indent=1)
+                    cell.font = Font(name=FONT_NAME, size=8, italic=True, color=SLATE)
                 elif col_label == "Tenant ID":
                     cell.alignment = Alignment(horizontal="center", vertical="center")
                 else:
@@ -1830,6 +2043,10 @@ def write_property_block(ws, start_row, name, address, units, mapping_entry):
                     cell.fill = row_fill
                 elif col_label in ("Market Rent", "Notes"):
                     cell.fill = fill(GRAY_LIGHT)
+                elif col_label == "ClickUp Summary":
+                    # Very light neutral tint so it reads as "informational,
+                    # not-for-editing" without competing with the Notes column.
+                    cell.fill = fill("F5F6F8")
             row += 1
 
     data_end_row = row - 1
@@ -1852,6 +2069,7 @@ def write_property_block(ws, start_row, name, address, units, mapping_entry):
         c_mkt = COLS["Market Rent"]
         c_pastdue = COLS["Past Due"]
         c_notes = COLS["Notes"]
+        c_summary = COLS["ClickUp Summary"]
 
         ws[f"{c_unit}{row}"] = "TOTALS"
         ws[f"{c_unit}{row}"].alignment = Alignment(horizontal="left", vertical="center", indent=1)
@@ -1899,6 +2117,7 @@ def write_property_block(ws, start_row, name, address, units, mapping_entry):
         ws[f"{c_pastdue}{row}"].alignment = Alignment(horizontal="right", vertical="center")
 
         ws[f"{c_notes}{row}"] = ""
+        ws[f"{c_summary}{row}"] = ""
 
         row += 1
 
@@ -1952,6 +2171,18 @@ def run_build(mode, dry_run):
         broker_active_interest = pull_broker_beat_attachments(broker_reporting_tasks)
         property_overrides = merge_broker_active_interest(property_overrides, broker_active_interest)
 
+    # Step 4b: pull ClickUp LAR Summaries (Renewal + Vacancy + Docs Workflow).
+    # Runs every mode (nightly, weekly, dry-run) since the ClickUp Summary
+    # column is displayed at all times. Non-fatal on failure — if ClickUp is
+    # down or the token is wrong, individual list fetches will log warnings
+    # and skip, and the workbook will render with empty ClickUp Summary
+    # cells rather than crashing the whole build.
+    try:
+        clickup_summaries_by_tenant, clickup_summaries_by_prop_unit = pull_lar_summaries()
+    except Exception as e:  # noqa: BLE001
+        LOG.warning(f"LAR summaries pull failed — continuing with empty summaries: {e}")
+        clickup_summaries_by_tenant, clickup_summaries_by_prop_unit = {}, {}
+
     # Step 5: rebuild workbook.
     output_filename = "Leasing-Snap-Shot-dryrun.xlsx" if dry_run else "Leasing-Snap-Shot.xlsx"
     output_path = os.path.join(LOCAL_BUILD_DIR if not dry_run else "/tmp", output_filename)
@@ -1964,6 +2195,8 @@ def run_build(mode, dry_run):
         broker_map=broker_map,
         output_path=output_path,
         logo_path=LOGO_PATH,
+        clickup_summaries_by_tenant=clickup_summaries_by_tenant,
+        clickup_summaries_by_prop_unit=clickup_summaries_by_prop_unit,
     )
 
     # Step 6: upload to SharePoint (skip entirely for dry-run).

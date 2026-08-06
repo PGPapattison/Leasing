@@ -10,7 +10,8 @@
     "confirmed": true,
     "source": "broker_only",
     "needs_review": false,
-    "notes": ""
+    "notes": "",
+    "rem_name": "Leah Sykes"
   },
   {
     "excel_name": "Ashcroft Commons",
@@ -21,7 +22,8 @@
     "clickup_task_id": "868kh55cj",
     "clickup_task_name": "Ashcroft Commons",
     "confirmed": true,
-    "source": "ann_sheet"
+    "source": "ann_sheet",
+    "rem_name": "Kerri Blevins"
   },
   {
     "excel_name": "Barker Cypress Marketplace",
@@ -32,7 +34,8 @@
     "clickup_task_id": "868kh55ay",
     "clickup_task_name": "Barkers Cypress Marketplace",
     "confirmed": true,
-    "source": "ann_sheet"
+    "source": "ann_sheet",
+    "rem_name": "Leah Sykes"
   },
   {
     "excel_name": "",
@@ -43,7 +46,8 @@
     "clickup_task_id": "868kh55au",
     "clickup_task_name": "Castle Shops",
     "confirmed": true,
-    "source": "broker_only"
+    "source": "broker_only",
+    "rem_name": "Leah Sykes"
   },
   {
     "excel_name": "Champaign Station",
@@ -54,7 +58,8 @@
     "clickup_task_id": "868kh55af",
     "clickup_task_name": "Champaign Station",
     "confirmed": true,
-    "source": "ann_sheet"
+    "source": "ann_sheet",
+    "rem_name": "Leah Sykes"
   },
   {
     "excel_name": "Chatham Centre",
@@ -65,7 +70,8 @@
     "clickup_task_id": "868kh55ae",
     "clickup_task_name": "Chatham Centre",
     "confirmed": true,
-    "source": "ann_sheet"
+    "source": "ann_sheet",
+    "rem_name": "Kerri Blevins"
   },
   {
     "excel_name": "Cleveland Corners",
@@ -76,7 +82,8 @@
     "clickup_task_id": "868kh55ch",
     "clickup_task_name": "Cleveland Corners",
     "confirmed": true,
-    "source": "ann_sheet"
+    "source": "ann_sheet",
+    "rem_name": "Parker Owen"
   },
   {
     "excel_name": "",
@@ -87,7 +94,8 @@
     "clickup_task_id": "868kh55ad",
     "clickup_task_name": "Comotara Center",
     "confirmed": true,
-    "source": "broker_only"
+    "source": "broker_only",
+    "rem_name": "Leah Sykes"
   },
   {
     "excel_name": "Cumberland Flex",
@@ -98,7 +106,8 @@
     "clickup_task_id": "868kh555h",
     "clickup_task_name": "Cumberland Flex",
     "confirmed": true,
-    "source": "ann_sheet"
+    "source": "ann_sheet",
+    "rem_name": "Parker Owen"
   },
   {
     "excel_name": "Dollar Tree Plaza",
@@ -109,7 +118,8 @@
     "clickup_task_id": "868kh55e3",
     "clickup_task_name": "Dollar Tree Plaza",
     "confirmed": true,
-    "source": "ann_sheet"
+    "source": "ann_sheet",
+    "rem_name": "Leah Sykes"
   },
   {
     "excel_name": "",
@@ -120,7 +130,8 @@
     "clickup_task_id": "868kh55aw",
     "clickup_task_name": "Douglas Square",
     "confirmed": true,
-    "source": "broker_only"
+    "source": "broker_only",
+    "rem_name": "Kerri Blevins"
   },
   {
     "excel_name": "Eastgate Shopping Center",
@@ -131,7 +142,8 @@
     "clickup_task_id": "868kh556p",
     "clickup_task_name": "Eastgate Shopping Center",
     "confirmed": true,
-    "source": "ann_sheet"
+    "source": "ann_sheet",
+    "rem_name": "Leah Sykes"
   },
   {
     "excel_name": "Elmwood Crossing",
@@ -142,7 +154,8 @@
     "clickup_task_id": "868kh55av",
     "clickup_task_name": "Elmwood Crossing",
     "confirmed": true,
-    "source": "ann_sheet"
+    "source": "ann_sheet",
+    "rem_name": "Parker Owen"
   },
   {
     "excel_name": "Garner Plaza (Cornerstone)",
@@ -153,7 +166,8 @@
     "clickup_task_id": "868kh559w",
     "clickup_task_name": "Garner Plaza",
     "confirmed": true,
-    "source": "ann_sheet"
+    "source": "ann_sheet",
+    "rem_name": "Leah Sykes"
   },
   {
     "excel_name": "Garners Ferry",
@@ -164,7 +178,8 @@
     "clickup_task_id": "868kh559x",
     "clickup_task_name": "Garners Ferry",
     "confirmed": true,
-    "source": "ann_sheet"
+    "source": "ann_sheet",
+    "rem_name": "Kerri Blevins"
   },
   {
     "excel_name": "Hamilton Crossing",
@@ -175,7 +190,8 @@
     "clickup_task_id": "868kh5580",
     "clickup_task_name": "Hamilton Crossing",
     "confirmed": true,
-    "source": "ann_sheet"
+    "source": "ann_sheet",
+    "rem_name": "Leah Sykes"
   },
   {
     "excel_name": "Hampton Cove Shops",
@@ -186,7 +202,8 @@
     "clickup_task_id": "868kh5571",
     "clickup_task_name": "Hampton Cove Shops",
     "confirmed": true,
-    "source": "ann_sheet"
+    "source": "ann_sheet",
+    "rem_name": "Parker Owen"
   },
   {
     "excel_name": "Hanover Square North",
@@ -197,7 +214,8 @@
     "clickup_task_id": "868kh558k",
     "clickup_task_name": "Hanover Square North",
     "confirmed": true,
-    "source": "ann_sheet"
+    "source": "ann_sheet",
+    "rem_name": "Kerri Blevins"
   },
   {
     "excel_name": "Harrison Crossing",
@@ -208,7 +226,8 @@
     "clickup_task_id": "868kh5595",
     "clickup_task_name": "Harrison Crossing",
     "confirmed": true,
-    "source": "ann_sheet"
+    "source": "ann_sheet",
+    "rem_name": "Leah Sykes"
   },
   {
     "excel_name": "Hartsville Crossing",
@@ -219,7 +238,8 @@
     "clickup_task_id": "868kh55bk",
     "clickup_task_name": "Hartsville Crossing",
     "confirmed": true,
-    "source": "ann_sheet"
+    "source": "ann_sheet",
+    "rem_name": "Parker Owen"
   },
   {
     "excel_name": "Heritage Square",
@@ -230,7 +250,8 @@
     "clickup_task_id": "868kh5576",
     "clickup_task_name": "Heritage Square",
     "confirmed": true,
-    "source": "ann_sheet"
+    "source": "ann_sheet",
+    "rem_name": "Kerri Blevins"
   },
   {
     "excel_name": "Hickory Promenade",
@@ -241,7 +262,8 @@
     "clickup_task_id": "868kh5575",
     "clickup_task_name": "Hickory Promenade",
     "confirmed": true,
-    "source": "ann_sheet"
+    "source": "ann_sheet",
+    "rem_name": "Kerri Blevins"
   },
   {
     "excel_name": "Home Center",
@@ -252,7 +274,8 @@
     "clickup_task_id": "868kh555c",
     "clickup_task_name": "Home Center",
     "confirmed": true,
-    "source": "ann_sheet"
+    "source": "ann_sheet",
+    "rem_name": "Leah Sykes"
   },
   {
     "excel_name": "Hoover Court",
@@ -263,7 +286,8 @@
     "clickup_task_id": "868kh55de",
     "clickup_task_name": "Hoover Court",
     "confirmed": true,
-    "source": "ann_sheet"
+    "source": "ann_sheet",
+    "rem_name": "Parker Owen"
   },
   {
     "excel_name": "",
@@ -274,7 +298,8 @@
     "clickup_task_id": "868kh559y",
     "clickup_task_name": "Indian River Plaza",
     "confirmed": true,
-    "source": "broker_only"
+    "source": "broker_only",
+    "rem_name": "Parker Owen"
   },
   {
     "excel_name": "Ireland Industrial",
@@ -285,7 +310,8 @@
     "clickup_task_id": "868kh55be",
     "clickup_task_name": "Ireland Industrial",
     "confirmed": true,
-    "source": "ann_sheet"
+    "source": "ann_sheet",
+    "rem_name": "Parker Owen"
   },
   {
     "excel_name": "Kinnamon Village",
@@ -296,7 +322,8 @@
     "clickup_task_id": "868kh558n",
     "clickup_task_name": "Kinnamon Village",
     "confirmed": true,
-    "source": "ann_sheet"
+    "source": "ann_sheet",
+    "rem_name": "Leah Sykes"
   },
   {
     "excel_name": "Lake Dow Pavilion",
@@ -307,7 +334,8 @@
     "clickup_task_id": "868kh55dk",
     "clickup_task_name": "Lake Dow Pavilion",
     "confirmed": true,
-    "source": "ann_sheet"
+    "source": "ann_sheet",
+    "rem_name": "Parker Owen"
   },
   {
     "excel_name": "",
@@ -318,7 +346,8 @@
     "clickup_task_id": "868kh5581",
     "clickup_task_name": "Lakeview Village",
     "confirmed": true,
-    "source": "broker_only"
+    "source": "broker_only",
+    "rem_name": "Parker Owen"
   },
   {
     "excel_name": "Lawyers Square (Mint Hill) (Cornerstone)",
@@ -329,7 +358,8 @@
     "clickup_task_id": "868kh556m",
     "clickup_task_name": "Lawyers Square (Mint Hill) (Cornerstone)",
     "confirmed": true,
-    "source": "ann_sheet"
+    "source": "ann_sheet",
+    "rem_name": "Leah Sykes"
   },
   {
     "excel_name": "Market Square II",
@@ -340,7 +370,8 @@
     "clickup_task_id": "868kh5574",
     "clickup_task_name": "Market Square II",
     "confirmed": true,
-    "source": "ann_sheet"
+    "source": "ann_sheet",
+    "rem_name": "Parker Owen"
   },
   {
     "excel_name": "Meadow Lake",
@@ -351,7 +382,8 @@
     "clickup_task_id": "868kh556h",
     "clickup_task_name": "Meadow Lake",
     "confirmed": true,
-    "source": "ann_sheet"
+    "source": "ann_sheet",
+    "rem_name": "Parker Owen"
   },
   {
     "excel_name": "Melbourne Plaza",
@@ -362,7 +394,8 @@
     "clickup_task_id": "868kh55bm",
     "clickup_task_name": "Melbourne Plaza",
     "confirmed": true,
-    "source": "ann_sheet"
+    "source": "ann_sheet",
+    "rem_name": "Leah Sykes"
   },
   {
     "excel_name": "",
@@ -373,7 +406,8 @@
     "clickup_task_id": "868kh55cy",
     "clickup_task_name": "Military Plaza",
     "confirmed": true,
-    "source": "broker_only"
+    "source": "broker_only",
+    "rem_name": "Kerri Blevins"
   },
   {
     "excel_name": "Moss Creek Village",
@@ -384,7 +418,8 @@
     "clickup_task_id": "868kh55bg",
     "clickup_task_name": "Moss Creek Village",
     "confirmed": true,
-    "source": "ann_sheet"
+    "source": "ann_sheet",
+    "rem_name": "Parker Owen"
   },
   {
     "excel_name": "North Hills Crossing (Lenoir)",
@@ -395,7 +430,8 @@
     "clickup_task_id": "868kh5591",
     "clickup_task_name": "North Hills Crossing (Lenoir)",
     "confirmed": true,
-    "source": "ann_sheet"
+    "source": "ann_sheet",
+    "rem_name": "Kerri Blevins"
   },
   {
     "excel_name": "Patriot Square",
@@ -406,7 +442,8 @@
     "clickup_task_id": "868kh55c4",
     "clickup_task_name": "Patriot Square",
     "confirmed": true,
-    "source": "ann_sheet"
+    "source": "ann_sheet",
+    "rem_name": "Kerri Blevins"
   },
   {
     "excel_name": "Perimeter Oaks",
@@ -417,7 +454,8 @@
     "clickup_task_id": "868kh55c5",
     "clickup_task_name": "Perimeter Oaks",
     "confirmed": true,
-    "source": "ann_sheet"
+    "source": "ann_sheet",
+    "rem_name": "Leah Sykes"
   },
   {
     "excel_name": "Piedmont Parkway",
@@ -428,7 +466,8 @@
     "clickup_task_id": "868kh55c2",
     "clickup_task_name": "Piedmont Parkway",
     "confirmed": true,
-    "source": "ann_sheet"
+    "source": "ann_sheet",
+    "rem_name": "Leah Sykes"
   },
   {
     "excel_name": "Promenade North",
@@ -439,7 +478,8 @@
     "clickup_task_id": "868kh558m",
     "clickup_task_name": "Promenade North",
     "confirmed": true,
-    "source": "ann_sheet"
+    "source": "ann_sheet",
+    "rem_name": "Parker Owen"
   },
   {
     "excel_name": "Promenade Point",
@@ -450,7 +490,8 @@
     "clickup_task_id": "868kh558q",
     "clickup_task_name": "Promenade Point",
     "confirmed": true,
-    "source": "ann_sheet"
+    "source": "ann_sheet",
+    "rem_name": "Parker Owen"
   },
   {
     "excel_name": "Reidsville Center",
@@ -461,7 +502,8 @@
     "clickup_task_id": "868kh5572",
     "clickup_task_name": "Reidsville Center",
     "confirmed": true,
-    "source": "ann_sheet"
+    "source": "ann_sheet",
+    "rem_name": "Kerri Blevins"
   },
   {
     "excel_name": "",
@@ -472,7 +514,8 @@
     "clickup_task_id": "868kh55aa",
     "clickup_task_name": "Richland Plaza (Bloomington)",
     "confirmed": true,
-    "source": "broker_only"
+    "source": "broker_only",
+    "rem_name": "Leah Sykes"
   },
   {
     "excel_name": "Riverfront Shoppes",
@@ -483,7 +526,8 @@
     "clickup_task_id": "868kh55c0",
     "clickup_task_name": "Riverfront Shoppes",
     "confirmed": true,
-    "source": "ann_sheet"
+    "source": "ann_sheet",
+    "rem_name": "Leah Sykes"
   },
   {
     "excel_name": "",
@@ -494,7 +538,8 @@
     "clickup_task_id": "868kh5597",
     "clickup_task_name": "Rivergate Shopping Center",
     "confirmed": true,
-    "source": "broker_only"
+    "source": "broker_only",
+    "rem_name": "Leah Sykes"
   },
   {
     "excel_name": "Roxboro Square",
@@ -505,7 +550,8 @@
     "clickup_task_id": "868kh557w",
     "clickup_task_name": "Roxboro Square",
     "confirmed": true,
-    "source": "ann_sheet"
+    "source": "ann_sheet",
+    "rem_name": "Leah Sykes"
   },
   {
     "excel_name": "Savannah Crossing",
@@ -516,7 +562,8 @@
     "clickup_task_id": "868kh55d3",
     "clickup_task_name": "Savannah Crossing",
     "confirmed": true,
-    "source": "ann_sheet"
+    "source": "ann_sheet",
+    "rem_name": "Parker Owen"
   },
   {
     "excel_name": "Scenic Square",
@@ -527,7 +574,8 @@
     "clickup_task_id": "868kh55cf",
     "clickup_task_name": "Scenic Square",
     "confirmed": true,
-    "source": "ann_sheet"
+    "source": "ann_sheet",
+    "rem_name": "Leah Sykes"
   },
   {
     "excel_name": "Shoppes at Hickory",
@@ -538,7 +586,8 @@
     "clickup_task_id": "868kh55d1",
     "clickup_task_name": "Shoppes at Hickory",
     "confirmed": true,
-    "source": "ann_sheet"
+    "source": "ann_sheet",
+    "rem_name": "Kerri Blevins"
   },
   {
     "excel_name": "Shops at Turner Hill (Lithonia)",
@@ -549,7 +598,8 @@
     "clickup_task_id": "868kh55e0",
     "clickup_task_name": "Shops at Turner Hill (Lithonia)",
     "confirmed": true,
-    "source": "ann_sheet"
+    "source": "ann_sheet",
+    "rem_name": "Parker Owen"
   },
   {
     "excel_name": "Shops at Valley",
@@ -560,7 +610,8 @@
     "clickup_task_id": "868kh55df",
     "clickup_task_name": "Shops at Valley",
     "confirmed": true,
-    "source": "ann_sheet"
+    "source": "ann_sheet",
+    "rem_name": "Parker Owen"
   },
   {
     "excel_name": "Shops of Schillinger",
@@ -571,7 +622,8 @@
     "clickup_task_id": "868kh555x",
     "clickup_task_name": "Shops of Schillinger",
     "confirmed": true,
-    "source": "ann_sheet"
+    "source": "ann_sheet",
+    "rem_name": "Parker Owen"
   },
   {
     "excel_name": "Snow Street Village",
@@ -582,7 +634,8 @@
     "clickup_task_id": "868kh55a0",
     "clickup_task_name": "Snow Street Village",
     "confirmed": true,
-    "source": "ann_sheet"
+    "source": "ann_sheet",
+    "rem_name": "Parker Owen"
   },
   {
     "excel_name": "",
@@ -593,7 +646,8 @@
     "clickup_task_id": "868kh55bj",
     "clickup_task_name": "Somerset Shoppes",
     "confirmed": true,
-    "source": "broker_only"
+    "source": "broker_only",
+    "rem_name": "Parker Owen"
   },
   {
     "excel_name": "",
@@ -604,7 +658,8 @@
     "clickup_task_id": "868kh55d0",
     "clickup_task_name": "South Memorial Plaza (Tulsa)",
     "confirmed": true,
-    "source": "broker_only"
+    "source": "broker_only",
+    "rem_name": "Kerri Blevins"
   },
   {
     "excel_name": "South Shades Crest Station",
@@ -615,7 +670,8 @@
     "clickup_task_id": "868kh557z",
     "clickup_task_name": "South Shades Crest Station",
     "confirmed": true,
-    "source": "ann_sheet"
+    "source": "ann_sheet",
+    "rem_name": "Parker Owen"
   },
   {
     "excel_name": "",
@@ -626,7 +682,8 @@
     "clickup_task_id": "868kh55c1",
     "clickup_task_name": "Southgate Centre",
     "confirmed": true,
-    "source": "broker_only"
+    "source": "broker_only",
+    "rem_name": "Parker Owen"
   },
   {
     "excel_name": "Sparkleberry Crossing",
@@ -637,7 +694,8 @@
     "clickup_task_id": "868kh555f",
     "clickup_task_name": "Sparkleberry Crossing",
     "confirmed": true,
-    "source": "ann_sheet"
+    "source": "ann_sheet",
+    "rem_name": "Parker Owen"
   },
   {
     "excel_name": "Stratford Plaza (Cornerstone)",
@@ -648,7 +706,8 @@
     "clickup_task_id": "868kh554j",
     "clickup_task_name": "Stratford Plaza",
     "confirmed": true,
-    "source": "ann_sheet"
+    "source": "ann_sheet",
+    "rem_name": "Leah Sykes"
   },
   {
     "excel_name": "Sugarloaf Village",
@@ -659,7 +718,8 @@
     "clickup_task_id": "868kh554n",
     "clickup_task_name": "Sugarloaf Village",
     "confirmed": true,
-    "source": "ann_sheet"
+    "source": "ann_sheet",
+    "rem_name": "Parker Owen"
   },
   {
     "excel_name": "",
@@ -670,7 +730,8 @@
     "clickup_task_id": "868kh55db",
     "clickup_task_name": "Tori Pines Plaza",
     "confirmed": true,
-    "source": "broker_only"
+    "source": "broker_only",
+    "rem_name": "Kerri Blevins"
   },
   {
     "excel_name": "Turnberry Crossing",
@@ -681,7 +742,8 @@
     "clickup_task_id": "868kh554h",
     "clickup_task_name": "Turnberry Crossing",
     "confirmed": true,
-    "source": "ann_sheet"
+    "source": "ann_sheet",
+    "rem_name": "Kerri Blevins"
   },
   {
     "excel_name": "Valley Plaza (Vernon)",
@@ -692,7 +754,8 @@
     "clickup_task_id": "868kh554k",
     "clickup_task_name": "Valley Plaza (Vernon)",
     "confirmed": true,
-    "source": "ann_sheet"
+    "source": "ann_sheet",
+    "rem_name": "Leah Sykes"
   },
   {
     "excel_name": "",
@@ -703,7 +766,8 @@
     "clickup_task_id": "868kh556g",
     "clickup_task_name": "Village Plaza (Hot Springs)",
     "confirmed": true,
-    "source": "broker_only"
+    "source": "broker_only",
+    "rem_name": "Kerri Blevins"
   },
   {
     "excel_name": "Village Shoppes of Destin",
@@ -714,7 +778,8 @@
     "clickup_task_id": "868kh5598",
     "clickup_task_name": "Village Shoppes of Destin",
     "confirmed": true,
-    "source": "ann_sheet"
+    "source": "ann_sheet",
+    "rem_name": "Parker Owen"
   },
   {
     "excel_name": "Wadesboro Place",
@@ -725,7 +790,8 @@
     "clickup_task_id": "868kh559z",
     "clickup_task_name": "Wadesboro Place",
     "confirmed": true,
-    "source": "ann_sheet"
+    "source": "ann_sheet",
+    "rem_name": "Leah Sykes"
   },
   {
     "excel_name": "Walnut Creek",
@@ -736,7 +802,8 @@
     "clickup_task_id": "868kh55cg",
     "clickup_task_name": "Walnut Creek",
     "confirmed": true,
-    "source": "ann_sheet"
+    "source": "ann_sheet",
+    "rem_name": "Parker Owen"
   },
   {
     "excel_name": "Wells Landing",
@@ -747,7 +814,8 @@
     "clickup_task_id": "868kh55ce",
     "clickup_task_name": "Wells Landing",
     "confirmed": true,
-    "source": "ann_sheet"
+    "source": "ann_sheet",
+    "rem_name": "Parker Owen"
   },
   {
     "excel_name": "Westwood Plaza",
@@ -758,7 +826,8 @@
     "clickup_task_id": "868kh55d4",
     "clickup_task_name": "Westwood Plaza",
     "confirmed": true,
-    "source": "ann_sheet"
+    "source": "ann_sheet",
+    "rem_name": "Parker Owen"
   },
   {
     "excel_name": "Whipple Bradley Plaza",
@@ -769,7 +838,8 @@
     "clickup_task_id": "868kh558g",
     "clickup_task_name": "Whipple Bradley Plaza",
     "confirmed": true,
-    "source": "ann_sheet"
+    "source": "ann_sheet",
+    "rem_name": "Kerri Blevins"
   },
   {
     "excel_name": "Winter Haven Med Village",
@@ -780,7 +850,8 @@
     "clickup_task_id": "868kh55dh",
     "clickup_task_name": "Winter Haven Med Village",
     "confirmed": true,
-    "source": "ann_sheet"
+    "source": "ann_sheet",
+    "rem_name": "Parker Owen"
   },
   {
     "excel_name": "Wistar Center",
@@ -791,6 +862,7 @@
     "clickup_task_id": "868kh555e",
     "clickup_task_name": "Wistar Center",
     "confirmed": true,
-    "source": "ann_sheet"
+    "source": "ann_sheet",
+    "rem_name": "Kerri Blevins"
   }
 ]

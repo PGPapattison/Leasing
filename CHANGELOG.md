@@ -2,6 +2,60 @@
 
 All notable changes to the Leasing automations repo. Newest at the top.
 
+## 2026-08-06 — Snap Shot: add ClickUp Summary column + REM name banner (L3 — Commit 1 of 2)
+
+- **File(s):** `snap_shot/rebuild.py`, `snap_shot/data/property_mapping_all73.json`
+- **Author:** Alexis Pattison
+- **Skill:** `prudent-snap-shot-rebuild` (pending v1.1 update in a later commit — skill still describes prior schema until Commit 2 lands)
+
+**Why.** Alexis: "It would be ideal if we could add a ClickUp Summary column to the Rent Roll that could pull the summary from ClickUp and paste it there each day and also have a column that the REM's could make a note on and then that note be transfered into ClickUp each night when the update runs. In order for it to show the proper name of the person posting the comment, wed probably also need to add the name of the Real Estate Manager to each property in the LSS." Then follow-up: "Could the REM name go right justified on the same row the Property ID and Address is on? Also, the REM Names wont change and in the odd case they did, we can manually change it on that row so im not sure you need to pull that (#2 above) each night. Could we do Commit 1 now and then Commit 2 later today?"
+
+This is Commit 1 of 2: the read-only side (ClickUp → Excel) plus the REM name banner. Commit 2 (later today) adds the write-side REM Note column that round-trips comments back to ClickUp with REM name attribution.
+
+**What changed.**
+- **New Rent Roll column O ("ClickUp Summary", width 44)** on every property block. Read-only from ClickUp. Populated nightly from the three LAR lists (Renewal Pipeline `901113575567`, Vacancy Pipeline `901113575628`, Documents Workflow `901113991446`).
+- **New helper `pull_lar_summaries()`** in `rebuild.py`. Pulls every task from all three LAR lists, reads each task's Summary custom field (Renewal + Vacancy share field ID `93833d96-…`; Documents Workflow uses `190e6156-…`), and returns two indexes:
+  - `by_tenant_id`: `{TenantId → summary_text}` used for occupied units. First-match-wins in list order Renewal > Vacancy > Documents Workflow.
+  - `by_prop_unit`: `{(PropertyId, Unit#) → summary_text}` used for vacant units (no TenantId). Vacancy Pipeline only.
+- **Match logic in `write_property_block` per-unit loop:** try Tenant ID first, fall back to (Property ID, Unit #). No match → empty cell.
+- **New REM name banner** on the address row of every property block. Same row as "Property ID: NNN · Address", right-justified in a new L–O merged region: `"Real Estate Manager: {name}"`. Falls back to italic em-dash if REM is unset. Same BLUE_MID fill as the address so the split is visually invisible.
+- **REM names baked into `property_mapping_all73.json`.** 72/72 rows now carry `rem_name`. Populated by joining the Property master list (`901112873404`, field "🏠 Real Estate Manager 2" `e0d44d11-…`) on Property ID (`057285dd-…`). Distribution: Parker Owen 30, Leah Sykes 24, Kerri Blevins 18. Per Alexis, this is a one-time bake — REM assignments don't change nightly; on the rare change they'll be edited manually in the mapping file.
+- **`build_workbook()` signature extended** with two new optional kwargs (`clickup_summaries_by_tenant`, `clickup_summaries_by_prop_unit`), threaded down to `write_property_block` via `mapping_entry["_clickup_summaries_by_tenant/_by_prop_unit"]` (same pattern already used for `_market_rent_overrides`, `_unit_notes`, etc.).
+- **`run_build()`** calls `pull_lar_summaries()` before `build_workbook()` in every mode (nightly, weekly, dry-run). Non-fatal on failure: individual list fetch errors log warnings and skip; a total failure logs a warning and continues with empty summaries rather than crashing the whole build.
+- **Cell styling for the new column:** 8pt italic slate on very-light-gray fill (`F5F6F8`), wrap-text on. Visually distinguishes it as "informational, not for editing."
+- **Row height priming:** if the summary is >60 chars, pre-set the row height to match wrapped-line count (up to Excel's 409pt limit). Only raises height, never lowers — protects any existing height priming from the Notes column.
+- **Totals row** in `write_property_block` now blanks column O along with the existing Notes blank.
+- **`LAST_COL`** changed from `"N"` to `"O"`. Every full-width merge (`B{row}:{LAST_COL}{row}`) automatically widens, including the top LEASING SNAP SHOT title bar, KPI tiles, and per-property-name banner.
+- **KPI tile K column** now spans K–O (5 columns wide vs 4 previously) since `tile_ranges` uses `LAST_COL`. Accepted as-is — the fourth tile is slightly wider than the first three. Symmetric rework is a future polish item.
+
+**What did not change.**
+- **Ann's edit extraction (`extract_ann_edits`)** is untouched. It reads columns N and earlier for property overrides / unit notes / market rent overrides. Column O is never read on the extraction path, so ClickUp Summary values in the SharePoint file are always overwritten from the live LAR pull on every rebuild — not preserved as "user edits."
+- **All existing Ann-authored fields** (Deal Activity, Property Flags, Vacant Callouts, Ann's Commentary, Broker Calls, Market Rent overrides, per-unit Notes) still round-trip through SharePoint and are preserved on every rebuild.
+- **Broker Beat / Broker Active Interest** weekly refresh unchanged.
+- **Notes column (N)** unchanged — still REM-editable, still wrap-text, still round-tripped.
+- **Scheduling / cron / GitHub Actions workflows** unchanged.
+- **Change-detection SharePoint skip window** (15-min editor bypass) unchanged.
+- **ClickUp write paths** — NO writes to ClickUp in Commit 1. `pull_lar_summaries` is strictly read-only. Comment posting comes in Commit 2.
+
+**Risk / rollback.**
+- Risk: **medium**. Adds a new nightly ClickUp read across 3 lists (~500+ tasks). If ClickUp is down or rate-limits, individual list pulls log a warning and skip — the workbook still builds, just with empty ClickUp Summary cells. Widening `LAST_COL` from N to O affects every full-width merge in the workbook; the KPI tiles now show a slightly wider last tile. Print layout still fits landscape letter (`fitToWidth=1`).
+- Rollback: revert this commit. The mapping file's `rem_name` field will remain but be unused — no cleanup needed.
+
+**Verification.**
+1. Trigger a nightly run with `force_rebuild=true`. In the logs, look for `LAR pull totals:` — should show non-zero counts for both indexes.
+2. Open the resulting workbook. On any property block:
+   - Row 2 of the block should show the address on the left and "Real Estate Manager: {name}" right-justified.
+   - Rent Roll should have a new far-right column labeled "ClickUp Summary" (col O).
+   - Occupied units with active LAR tasks should show their AI summary text; unmatched units are blank.
+3. Confirm Ann's edits (Deal Activity, Notes) are preserved on the next round-trip — pick one property, add a fake note, run the rebuild, confirm the note persists.
+4. Confirm `extract_ann_edits` still reports the same counts it did before the change (no false-positive column-O reads).
+
+**Follow-up (Commit 2, later today).**
+- Add REM-editable "REM Note" column (col P) that round-trips into ClickUp as a task comment with `📋 LSS note from {REM name} ({date}): {text}` attribution.
+- Hidden state sheet for "Last Synced Note" per unit, to diff-detect changes so we only post when the note actually changed.
+- Update `prudent-snap-shot-rebuild` skill to v1.1 with the new schema, at that time.
+- Team email announcing the visible new column to REMs (Leah, Kerri, Parker, Alexis) — defer until Commit 2 ships so the whole feature is announced at once.
+
 ## 2026-08-05 — List description: overwrite instead of splice (L1)
 
 - **File(s):** `snap_shot/rebuild.py`
