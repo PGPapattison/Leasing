@@ -44,6 +44,10 @@ jobs:
       - name: Dump property block context
         continue-on-error: true
         run: python snap_shot/dump_context.py 2>&1 | tee -a recovery_out/run.log
+
+      - name: Dump full block layout
+        continue-on-error: true
+        run: python snap_shot/dump_block_layout.py 2>&1 | tee -a recovery_out/run.log
       - name: Upload recovered files
         if: always()
         uses: actions/upload-artifact@v4
