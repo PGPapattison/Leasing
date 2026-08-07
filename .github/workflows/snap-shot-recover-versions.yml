@@ -1,0 +1,29 @@
+name: Snap Shot — recover previous version (one-off)
+
+on:
+  workflow_dispatch:
+
+jobs:
+  recover:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: List and download recent versions
+        env:
+          APATTISON_MS_REFRESH_TOKEN: ${{ secrets.APATTISON_MS_REFRESH_TOKEN }}
+        run: python snap_shot/list_versions.py
+
+      - name: Upload recovered files
+        uses: actions/upload-artifact@v4
+        with:
+          name: snap-shot-versions
+          path: recovery_out/
+          retention-days: 7
