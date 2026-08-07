@@ -1537,6 +1537,116 @@ def upload_to_sharepoint(local_path):
     return final_response.json() if final_response is not None else {}
 
 
+# ─── SharePoint archive (RCA_2026-08-07 fix #4) ──────────────────────────────
+#
+# Every successful rebuild archives the current live Snap Shot to
+# {SHAREPOINT_FOLDER_PATH}/_archive/Leasing-Snap-Shot__pre_{timestamp}.xlsx
+# BEFORE we overwrite it. Retention: last 14 calendar days (roughly two full
+# weeks of nightlies + weeklies). Recovery becomes a 30-second SharePoint copy
+# instead of a version-history dive.
+
+ARCHIVE_FOLDER_NAME = "_archive"
+ARCHIVE_RETAIN_DAYS = 14
+
+
+def _archive_folder_path():
+    return f"{SHAREPOINT_FOLDER_PATH}/{ARCHIVE_FOLDER_NAME}"
+
+
+def archive_current_snap_shot(current_wb_bytes):
+    """Upload the pre-overwrite copy of the live Snap Shot to _archive/, then
+    prune archives older than ARCHIVE_RETAIN_DAYS. Non-fatal: caller wraps in
+    try/except so archive failures never block the primary rebuild.
+
+    current_wb_bytes is the bytes we already downloaded at the top of run_build
+    — no second Graph download needed."""
+    if not current_wb_bytes:
+        LOG.info("Archive: no current workbook bytes to archive (first run?).")
+        return
+
+    ts = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
+    archive_name = f"Leasing-Snap-Shot__pre_{ts}.xlsx"
+    archive_path = f"{_archive_folder_path()}/{archive_name}"
+
+    token = get_graph_access_token()
+    url = (
+        f"https://graph.microsoft.com/v1.0/sites/{SITE_ID}/drives/{DRIVE_ID}"
+        f"/root:/{archive_path}:/content"
+    )
+    r = http_request(
+        "PUT", url, context="SharePoint archive upload",
+        headers={
+            "Authorization": f"Bearer {token}",
+            "Content-Type": "application/octet-stream",
+        },
+        data=current_wb_bytes, timeout=HTTP_TIMEOUT_LONG_SEC,
+    )
+    if r.status_code not in (200, 201):
+        raise RuntimeError(
+            f"Archive upload failed: HTTP {r.status_code}: {r.text[:300]}"
+        )
+    size = len(current_wb_bytes)
+    LOG.info(f"Archive: copied current Snap Shot to _archive/{archive_name} ({size:,} bytes).")
+
+    try:
+        _prune_archives(token)
+    except Exception as e:  # noqa: BLE001
+        LOG.warning(f"Archive prune failed (non-fatal): {e}")
+
+
+def _prune_archives(token):
+    """Delete archives older than ARCHIVE_RETAIN_DAYS. Filename convention is
+    Leasing-Snap-Shot__pre_YYYYMMDD_HHMMSS.xlsx — anything not matching that
+    pattern is left alone (belt-and-suspenders against accidentally deleting
+    other files that happened to land in _archive/)."""
+    list_url = (
+        f"https://graph.microsoft.com/v1.0/sites/{SITE_ID}/drives/{DRIVE_ID}"
+        f"/root:/{_archive_folder_path()}:/children?$top=200"
+    )
+    r = http_request(
+        "GET", list_url, context="SharePoint archive list",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    if r.status_code == 404:
+        return  # folder doesn't exist yet
+    if r.status_code != 200:
+        raise RuntimeError(f"Archive list failed: HTTP {r.status_code}: {r.text[:300]}")
+
+    items = r.json().get("value", [])
+    cutoff = datetime.utcnow() - timedelta(days=ARCHIVE_RETAIN_DAYS)
+    pruned = 0
+    for it in items:
+        name = it.get("name", "")
+        if not (name.startswith("Leasing-Snap-Shot__pre_") and name.endswith(".xlsx")):
+            continue
+        try:
+            ts_str = name[len("Leasing-Snap-Shot__pre_"):-len(".xlsx")]
+            ts = datetime.strptime(ts_str, "%Y%m%d_%H%M%S")
+        except ValueError:
+            continue
+        if ts >= cutoff:
+            continue
+        item_id = it.get("id")
+        if not item_id:
+            continue
+        del_url = (
+            f"https://graph.microsoft.com/v1.0/sites/{SITE_ID}/drives/{DRIVE_ID}"
+            f"/items/{item_id}"
+        )
+        dr = http_request(
+            "DELETE", del_url, context="SharePoint archive prune",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        if dr.status_code in (200, 204):
+            pruned += 1
+            LOG.info(f"Archive: pruned {name} (>{ARCHIVE_RETAIN_DAYS}d old).")
+        else:
+            LOG.warning(f"Archive: could not prune {name}: HTTP {dr.status_code}")
+    if pruned:
+        LOG.info(f"Archive: pruned {pruned} old snapshot(s), retention={ARCHIVE_RETAIN_DAYS}d.")
+
+
+
 # ══════════════════════════════════════════════════════════════════════════
 # Microsoft Graph — error email
 # ══════════════════════════════════════════════════════════════════════════
@@ -1588,6 +1698,16 @@ def send_error_email(subject, body):
 #   Market Rent in column H and Notes in column N (see COLS in build_workbook).
 
 NOTE_LABEL_TO_KEY = {
+    # "Broker / Contact" is auto-populated from the ClickUp Broker Directory
+    # on every rebuild — we do NOT preserve REM edits to this row. It IS listed
+    # here so the label-consumption loop in extract_ann_edits sees all 7 rows
+    # the renderer writes and doesn't overshoot the RENT ROLL header. The
+    # extracted value under 'broker_contact' is intentionally not read back by
+    # write_property_block. (See RCA_2026-08-07.md — omitting this key was the
+    # root cause of the 2026-08-07 REM Comment wipe: 6 mapped labels vs 7
+    # written rows caused the extractor's misses<2 loop to break on RENT ROLL
+    # itself, leaving scan_row one row past the header.)
+    "broker / contact": "broker_contact",
     "broker calls": "broker_calls",
     "property flags": "property_flags",
     "vacant callouts": "vacant_callouts",
@@ -1698,9 +1818,18 @@ def extract_ann_edits(workbook_bytes):
             # Find the RENT ROLL section within this block and walk unit rows
             # (Unit=B, ..., Market Rent=H, ..., Notes=N) until a blank Unit
             # cell (spacer row) signals the end of the block.
-            scan_row = r
+            #
+            # Scan starts from notes_start (top of the note-label block), not
+            # from wherever the label-consumption loop happened to stop. This is
+            # defensive against label-count drift: if the renderer adds or
+            # removes a note row in the future, the label loop may over- or
+            # under-shoot, but the RENT ROLL header itself is always ~8-12 rows
+            # below notes_start. Starting from notes_start with a wider window
+            # keeps the extractor robust even when the label map is briefly out
+            # of sync with the renderer. (RCA_2026-08-07.md.)
+            scan_row = notes_start
             rent_roll_header_row = None
-            for probe in range(scan_row, min(scan_row + 20, max_row + 1)):
+            for probe in range(scan_row, min(scan_row + 25, max_row + 1)):
                 if cell_text(probe, "B").upper() == "RENT ROLL":
                     rent_roll_header_row = probe
                     break
@@ -1755,6 +1884,20 @@ def extract_ann_edits(workbook_bytes):
         f"{len(rem_comments_by_prop_unit)} REM ClickUp Comments, "
         f"{len(last_synced_by_prop_unit)} Last-Synced stamps."
     )
+
+    # Per-block diagnostics: if REM comment extraction returns 0 but there ARE
+    # property blocks in the sheet, dump per-block detail so debugging doesn't
+    # require a separate re-run. (RCA_2026-08-07.md fix #5.)
+    if len(rem_comments_by_prop_unit) == 0 and blocks_found > 0:
+        LOG.warning(
+            "REM Comment extraction returned 0 across %d blocks — dumping per-block "
+            "note-key detail for debugging:", blocks_found,
+        )
+        for pid, note_dict in list(property_overrides.items())[:10]:
+            LOG.warning("  PropertyId=%s: note_keys=%s", pid, list(note_dict.keys()))
+        if len(property_overrides) > 10:
+            LOG.warning("  (… %d more blocks omitted …)", len(property_overrides) - 10)
+
     return (
         property_overrides,
         unit_notes,
@@ -1762,6 +1905,78 @@ def extract_ann_edits(workbook_bytes):
         rem_comments_by_prop_unit,
         last_synced_by_prop_unit,
     )
+
+
+# ─── REM Comment safety guard (Commit 4 — RCA_2026-08-07 fix #3) ──────────────
+
+REM_COUNT_STATE_PATH = os.path.join(DATA_DIR, "last_rem_count.json")
+
+
+def check_rem_comment_floor(current_count, force_rebuild, state_path=None):
+    """Refuse to proceed if the extracted REM Comment count dropped dangerously
+    below the previous run's count. Catches extractor regressions like the
+    2026-08-07 label-map drift that silently wiped 4 REM Comments.
+
+    Rules (fail loud, don't upload):
+      - Hard floor: prior > 0 and current == 0. Almost certainly extractor bug.
+      - Soft floor: prior >= 4 and current < prior // 2. >50% drop is suspicious.
+
+    Bypass with force_rebuild=True (already exposed as workflow input for the
+    "file is open in Excel, we know it's fine" case).
+
+    On success, writes the current count to state_path atomically for next run.
+    Returns None. Raises RuntimeError on guard trip.
+    """
+    path = state_path or REM_COUNT_STATE_PATH
+    try:
+        if os.path.exists(path):
+            prior = int(json.load(open(path)).get("count", 0))
+        else:
+            prior = 0
+    except Exception as e:
+        LOG.warning("REM count guard: could not read prior state (%s); treating prior=0.", e)
+        prior = 0
+
+    if not force_rebuild:
+        if prior > 0 and current_count == 0:
+            raise RuntimeError(
+                f"REM Comment safety guard TRIPPED: extractor returned 0 comments "
+                f"but the previous run saw {prior}. Refusing to upload — this would "
+                f"wipe REM comments (same failure mode as 2026-08-07 incident). "
+                f"Investigate the extractor before re-running. If the drop is genuine "
+                f"(e.g. REMs cleared all comments intentionally), re-dispatch with "
+                f"force_rebuild=true to bypass."
+            )
+        if prior >= 4 and current_count < (prior // 2):
+            raise RuntimeError(
+                f"REM Comment safety guard TRIPPED: extractor returned {current_count}, "
+                f"down >50% from {prior} last run. Refusing to upload. Investigate the "
+                f"extractor before re-running. Re-dispatch with force_rebuild=true to "
+                f"bypass."
+            )
+
+    LOG.info(
+        "REM count guard: current=%d, prior=%d, force_rebuild=%s — OK to proceed.",
+        current_count, prior, force_rebuild,
+    )
+
+    # Atomic write of new state so a crash mid-write doesn't corrupt it.
+    try:
+        tmp = path + ".tmp"
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(tmp, "w") as f:
+            json.dump(
+                {
+                    "count": int(current_count),
+                    "prior_count": int(prior),
+                    "ts_utc": datetime.utcnow().isoformat() + "Z",
+                },
+                f,
+                indent=2,
+            )
+        os.replace(tmp, path)
+    except Exception as e:
+        LOG.warning("REM count guard: could not persist new state (%s).", e)
 
 
 def reindex_overrides_by_clickup_task(property_overrides_by_property_id, mapping):
@@ -2772,9 +2987,13 @@ def write_property_block(ws, start_row, name, address, units, mapping_entry):
 # Orchestration
 # ══════════════════════════════════════════════════════════════════════════
 
-def run_build(mode, dry_run):
+def run_build(mode, dry_run, force_rebuild=False):
     """Executes steps 1-6 of the brief's script structure. Returns the local
-    output file path. Raises FatalError on any unrecoverable problem."""
+    output file path. Raises FatalError on any unrecoverable problem.
+
+    force_rebuild=True bypasses the REM Comment safety guard (see
+    check_rem_comment_floor). Also propagated from the existing workflow input
+    of the same name, which already zeroes out the race-condition window."""
 
     mapping = load_json(MAPPING_PATH)
     broker_map = load_json(BROKER_CONTACTS_PATH, required=False, default={})
@@ -2805,6 +3024,16 @@ def run_build(mode, dry_run):
         market_rent_overrides = market_rent_by_pid
         # unit_notes re-indexing needs the fresh rent roll, done after step 3 below.
         pending_unit_notes_raw = unit_notes_by_key
+
+        # REM Comment safety guard (RCA_2026-08-07 fix #3) — refuse to proceed if
+        # extraction returned 0 REM comments but the previous run saw more, or
+        # if the count dropped >50%. Fires BEFORE the workbook is rebuilt so we
+        # don't waste an AppFolio pull only to refuse the upload. Bypassed by
+        # force_rebuild=true from the workflow_dispatch input.
+        check_rem_comment_floor(
+            current_count=len(rem_comments_by_prop_unit),
+            force_rebuild=force_rebuild,
+        )
     else:
         LOG.info("No SharePoint workbook to extract from — using bundled fallback JSON.")
         property_overrides = load_json(NOTES_OVERRIDES_FALLBACK_PATH, required=False, default={})
@@ -2891,6 +3120,17 @@ def run_build(mode, dry_run):
         ticam_by_property=ticam_by_property,
     )
 
+    # Step 5b: archive the current live Snap Shot before we overwrite it, so
+    # recovery from any future extractor regression is a 30-second SharePoint
+    # copy instead of a version-history spelunk. (RCA_2026-08-07 fix #4.)
+    # Skipped for dry-run. Non-fatal — if archiving fails we still upload
+    # (rebuild is the primary product; archive is defense-in-depth).
+    if not dry_run and current_wb_bytes:
+        try:
+            archive_current_snap_shot(current_wb_bytes)
+        except Exception as e:  # noqa: BLE001
+            LOG.warning(f"Archive step failed (non-fatal, upload will proceed): {e}")
+
     # Step 6: upload to SharePoint (skip entirely for dry-run).
     if not dry_run:
         upload_result = upload_to_sharepoint(output_path) or {}
@@ -2920,16 +3160,20 @@ def run_build(mode, dry_run):
     return output_path
 
 
-def poll_and_maybe_rebuild():
+def poll_and_maybe_rebuild(force_rebuild=False):
     """--mode=poll: check the ClickUp control-task checkbox. If checked, run
-    a full nightly rebuild, then uncheck + comment. Returns exit code."""
+    a full nightly rebuild, then uncheck + comment. Returns exit code.
+
+    force_rebuild is propagated through to run_build so an operator dispatching
+    the poll workflow manually with the bypass flag doesn't get blocked by the
+    REM Comment safety guard."""
     control_task = find_control_task()
     if not is_checkbox_checked(control_task):
         LOG.info("Checkbox not checked; exiting.")
         return 0
 
     LOG.info(f"'{CHECKBOX_FIELD_NAME}' is checked on control task {control_task['id']} — running on-demand rebuild.")
-    output_path = run_build(mode="nightly", dry_run=False)
+    output_path = run_build(mode="nightly", dry_run=False, force_rebuild=force_rebuild)
     if output_path is None:
         # Race condition — do NOT uncheck the box; let the next poll retry.
         LOG.info("On-demand rebuild skipped (race condition). Leaving checkbox checked for the next poll.")
@@ -2947,16 +3191,27 @@ def main():
         "--mode", choices=["nightly", "weekly", "poll", "dry-run"], required=True,
         help="nightly | weekly | poll | dry-run",
     )
+    parser.add_argument(
+        "--force-rebuild", action="store_true",
+        default=os.environ.get("SNAP_SHOT_FORCE_REBUILD", "false").lower() == "true",
+        help=(
+            "Bypass safety guards (REM Comment floor, race condition). Also "
+            "reads env SNAP_SHOT_FORCE_REBUILD for workflow_dispatch plumbing."
+        ),
+    )
     args = parser.parse_args()
 
-    LOG.info(f"=== prudent-snap-shot-rebuild starting: mode={args.mode} ===")
+    LOG.info(
+        "=== prudent-snap-shot-rebuild starting: mode=%s force_rebuild=%s ===",
+        args.mode, args.force_rebuild,
+    )
     dry_run = args.mode == "dry-run"
 
     try:
         if args.mode == "poll":
-            rc = poll_and_maybe_rebuild()
+            rc = poll_and_maybe_rebuild(force_rebuild=args.force_rebuild)
         else:
-            output_path = run_build(mode=args.mode, dry_run=dry_run)
+            output_path = run_build(mode=args.mode, dry_run=dry_run, force_rebuild=args.force_rebuild)
             if output_path is None:
                 LOG.info("skipped — Ann is editing")
                 rc = 0

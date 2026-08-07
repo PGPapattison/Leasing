@@ -6,7 +6,14 @@ on:
     # [PAUSED] # 11:00–22:00 UTC covers 7 AM–6 PM EDT (summer).
     # [PAUSED] # In EST (winter) that's 6 AM–5 PM local — acceptable per user.
     # [PAUSED] - cron: '*/15 11-22 * * 1-5'
-  workflow_dispatch: {}
+  workflow_dispatch:
+    inputs:
+      force_rebuild:
+        description: 'Bypass REM Comment safety guard AND 15-min race guard (use only when we know the drop or edit is intentional)'
+        required: false
+        default: 'false'
+        type: choice
+        options: ['false', 'true']
 
 concurrency:
   group: snap-shot
@@ -35,4 +42,5 @@ jobs:
           APPFOLIO_API_SECRET: ${{ secrets.APPFOLIO_API_SECRET }}
           CLICKUP_API_TOKEN: ${{ secrets.CLICKUP_API_TOKEN }}
           SHAREPOINT_FOLDER_PATH: "General/_Prudent Growth Operations, LLC/LEASING & ASSET MANAGEMENT/WORKING DOCS"
+          SNAP_SHOT_FORCE_REBUILD: ${{ github.event.inputs.force_rebuild == 'true' && 'true' || 'false' }}
         run: python snap_shot/rebuild.py --mode=poll

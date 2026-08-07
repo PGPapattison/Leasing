@@ -14,7 +14,7 @@ on:
   workflow_dispatch:
     inputs:
       force_rebuild:
-        description: 'Bypass 15-min race guard (use when file is open in Excel and we know changes are safe to overwrite)'
+        description: 'Bypass REM Comment safety guard AND 15-min race guard (use when file is open in Excel and we know changes are safe to overwrite)'
         required: false
         default: 'false'
         type: choice
@@ -47,5 +47,6 @@ jobs:
           APPFOLIO_API_SECRET: ${{ secrets.APPFOLIO_API_SECRET }}
           CLICKUP_API_TOKEN: ${{ secrets.CLICKUP_API_TOKEN }}
           SNAP_SHOT_RACE_WINDOW_MIN: ${{ github.event.inputs.force_rebuild == 'true' && '0' || '15' }}
+          SNAP_SHOT_FORCE_REBUILD: ${{ github.event.inputs.force_rebuild == 'true' && 'true' || 'false' }}
           SHAREPOINT_FOLDER_PATH: "General/_Prudent Growth Operations, LLC/LEASING & ASSET MANAGEMENT/WORKING DOCS"
         run: python snap_shot/rebuild.py --mode=nightly

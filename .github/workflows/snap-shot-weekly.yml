@@ -8,7 +8,14 @@ on:
     # [PAUSED] # for the same reason as the nightly: GitHub Actions drops on-the-hour
     # [PAUSED] # scheduled events under load.
     # [PAUSED] - cron: '23 9 * * 1'
-  workflow_dispatch: {}
+  workflow_dispatch:
+    inputs:
+      force_rebuild:
+        description: 'Bypass REM Comment safety guard AND 15-min race guard (use only when we know the drop or edit is intentional)'
+        required: false
+        default: 'false'
+        type: choice
+        options: ['false', 'true']
 
 concurrency:
   group: snap-shot
@@ -37,4 +44,6 @@ jobs:
           APPFOLIO_API_SECRET: ${{ secrets.APPFOLIO_API_SECRET }}
           CLICKUP_API_TOKEN: ${{ secrets.CLICKUP_API_TOKEN }}
           SHAREPOINT_FOLDER_PATH: "General/_Prudent Growth Operations, LLC/LEASING & ASSET MANAGEMENT/WORKING DOCS"
+          SNAP_SHOT_FORCE_REBUILD: ${{ github.event.inputs.force_rebuild == 'true' && 'true' || 'false' }}
+          SNAP_SHOT_RACE_WINDOW_MIN: ${{ github.event.inputs.force_rebuild == 'true' && '0' || '15' }}
         run: python snap_shot/rebuild.py --mode=weekly

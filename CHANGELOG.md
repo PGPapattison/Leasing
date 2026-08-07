@@ -2,6 +2,47 @@
 
 All notable changes to the Leasing automations repo. Newest at the top.
 
+## 2026-08-07 — Snap Shot: fix REM Comment wipe + 4 safety guardrails (L3)
+
+- **File(s):** `snap_shot/rebuild.py`, `.github/workflows/snap-shot-nightly.yml`, `.github/workflows/snap-shot-poll.yml`, `.github/workflows/snap-shot-weekly.yml`, `snap_shot/RCA_2026-08-07.md`
+- **Author:** Alexis Pattison
+- **Skill:** `prudent-snap-shot-rebuild` v1.2 → v1.3 (behavior added: REM Comment safety guard, SharePoint _archive/ folder, per-block extraction diagnostics)
+
+**Why.** Leah added 4 REM Comments in the Snap Shot the evening of 2026-08-06. The next scheduled rebuild wiped them all before they synced to ClickUp. Full RCA in `snap_shot/RCA_2026-08-07.md`. Root cause: `NOTE_LABEL_TO_KEY` mapped 6 labels but the renderer writes 7 note rows ("Broker / Contact" was missing from the map). The 6-vs-7 mismatch caused the extractor's label-consumption loop to overshoot the RENT ROLL header by 1 row on every block, so every scheduled rebuild since Commit 2 shipped has silently extracted 0 REM Comments and wiped whatever REMs had typed.
+
+**What changed.**
+- `rebuild.py`
+  - `NOTE_LABEL_TO_KEY` — added `"broker / contact": "broker_contact"`. Extracted value is intentionally ignored by `write_property_block` (that row is auto-populated from the ClickUp Broker Directory on every rebuild); the map entry exists so the label-consumption loop consumes all 7 rows and stops in the right place. **This alone is the fix.**
+  - `extract_ann_edits` — RENT ROLL scan now starts from `notes_start` (top of the note block) with a wider 25-row window instead of from `r` (post-loop cursor). Defensive against future label-count drift.
+  - New `check_rem_comment_floor()` — refuses to proceed with rebuild if extracted REM Comment count drops to 0 (hard floor) or by >50% (soft floor) versus the previous run. Bypassed by `force_rebuild=true`. State persisted to `snap_shot/data/last_rem_count.json`.
+  - `run_build` — calls `check_rem_comment_floor` right after extraction, before AppFolio pull, so a tripped guard fails fast without wasting API calls.
+  - New `archive_current_snap_shot()` — uploads the current live Snap Shot to `WORKING DOCS/_archive/Leasing-Snap-Shot__pre_{utc-timestamp}.xlsx` before every overwrite. Retention: 14 days, auto-pruned. Non-fatal: archive failures log a warning but do not block the upload.
+  - `run_build` — calls `archive_current_snap_shot(current_wb_bytes)` right before `upload_to_sharepoint`. Reuses the bytes already downloaded, no second Graph call.
+  - Per-block extraction diagnostic — if extraction returns 0 REM comments across >0 blocks, dumps per-block note-key detail so future debugging doesn't require a re-run.
+  - `--force-rebuild` CLI flag (also reads env `SNAP_SHOT_FORCE_REBUILD`) plumbed through `run_build` and `poll_and_maybe_rebuild`. Bypasses the new REM Comment safety guard.
+- Workflows
+  - `snap-shot-nightly.yml` — `force_rebuild` input description updated (now covers both guards); new `SNAP_SHOT_FORCE_REBUILD` env var propagated to the script.
+  - `snap-shot-poll.yml`, `snap-shot-weekly.yml` — added the same `force_rebuild` workflow_dispatch input and env var wiring so all three workflows have consistent manual-override behavior. Weekly also gained the race-window override that nightly already had.
+
+**What did not change.**
+- Cron schedules — all three (`snap-shot-nightly`, `snap-shot-poll`, `snap-shot-weekly`) remain PAUSED from the prior commit. Restoring them is a separate commit once we've dispatched manual test runs and confirmed the fixes work end-to-end against production data.
+- `write_property_block` (renderer) — unchanged. Still writes the same 7 note rows in the same order and still ignores `broker_contact` when reading `_notes` back.
+- REM → ClickUp sync logic (`sync_rem_comments_to_clickup`) — unchanged. The wipe wasn't caused by the sync; it was caused by extraction returning zero to feed back into the render.
+- TICAM row layout — unchanged. Coincidentally shipped in the same window as heavy Leah REM-comment usage but was NOT the cause.
+- Race-condition window logic — unchanged; already had a `force_rebuild` bypass.
+- No ClickUp field IDs, no auth, no data source URLs, no email routing.
+
+**Risk / rollback.**
+- Risk: medium. The fix is small and syntactically minimal, but it changes what the extractor "sees" on every scheduled run. Mitigations: (1) unit-tested locally with a synthetic 2-property post-TICAM workbook — 3 REM comments extracted, 0 warnings; (2) unit-tested the safety guard through 8 scenarios (hard floor, soft floor, first-run, bypass, upgrade path) — all pass; (3) crons stay paused until a manual dispatch verifies against production data; (4) `_archive/` folder gives us a 30-second SharePoint recovery if anything else surfaces.
+- Rollback: `git revert 2887b68..HEAD` reverts fixes; workbook fallback to bundled JSON still works (well-exercised code path). Or leave crons paused indefinitely if guards keep tripping.
+
+**Verification.**
+- Local: `python3 -m py_compile snap_shot/rebuild.py` — PASS.
+- Local synthetic test: 2-property post-TICAM workbook with 3 REM comments distributed across blocks — all 3 extracted correctly, log shows "3 REM ClickUp Comments, 3 Last-Synced stamps", zero "no RENT ROLL section found" warnings. Contrast with last live nightly (run 31173169805) that showed "0 REM ClickUp Comments" and 72 identical RENT ROLL warnings.
+- Local safety-guard test: 8 scenarios all pass.
+- Production: manual `gh workflow run snap-shot-nightly.yml` dispatch after commit. Success criteria: log shows `>=4 REM ClickUp Comments` extracted (Leah's are back in the live workbook now), REM count guard logs `OK to proceed`, `_archive/` folder receives its first snapshot copy, no `no RENT ROLL section found` warnings, workbook uploaded successfully.
+- Restore schedules only after production dispatch passes.
+
 ## 2026-08-06 — Snap Shot: bump ClickUp Summary font 8pt → 10pt (L1)
 
 - **File(s):** `snap_shot/rebuild.py`
