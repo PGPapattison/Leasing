@@ -17,13 +17,18 @@ jobs:
           python-version: '3.11'
 
       - name: List and download recent versions
+        continue-on-error: true
         env:
           APATTISON_MS_REFRESH_TOKEN: ${{ secrets.APATTISON_MS_REFRESH_TOKEN }}
-        run: python snap_shot/list_versions.py
+        run: |
+          mkdir -p recovery_out
+          python snap_shot/list_versions.py 2>&1 | tee recovery_out/run.log
 
       - name: Upload recovered files
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: snap-shot-versions
           path: recovery_out/
           retention-days: 7
+          if-no-files-found: warn
