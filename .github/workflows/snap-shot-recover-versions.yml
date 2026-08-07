@@ -36,6 +36,10 @@ jobs:
         run: |
           pip install openpyxl 2>&1 | tail -2
           python snap_shot/count_rem_comments.py 2>&1 | tee -a recovery_out/run.log
+
+      - name: Print exact REM Comment locations in v02
+        continue-on-error: true
+        run: python snap_shot/print_rem_locations.py 2>&1 | tee -a recovery_out/run.log
       - name: Upload recovered files
         if: always()
         uses: actions/upload-artifact@v4
