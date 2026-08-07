@@ -30,6 +30,12 @@ jobs:
           APATTISON_MS_REFRESH_TOKEN: ${{ secrets.APATTISON_MS_REFRESH_TOKEN }}
         run: python snap_shot/list_recovery_folder.py 2>&1 | tee -a recovery_out/run.log
 
+
+      - name: Count REM Comments in each recovered file
+        continue-on-error: true
+        run: |
+          pip install openpyxl 2>&1 | tail -2
+          python snap_shot/count_rem_comments.py 2>&1 | tee -a recovery_out/run.log
       - name: Upload recovered files
         if: always()
         uses: actions/upload-artifact@v4
