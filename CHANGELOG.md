@@ -2,6 +2,39 @@
 
 All notable changes to the Leasing automations repo. Newest at the top.
 
+## 2026-08-07 — Snap Shot: restore paused schedules + delete _recovery/ folder (L3)
+
+- **File(s):** `.github/workflows/snap-shot-nightly.yml`, `.github/workflows/snap-shot-poll.yml`, `.github/workflows/snap-shot-weekly.yml`, `.github/workflows/snap-shot-delete-recovery-folder.yml` (new, one-off), `snap_shot/delete_recovery_folder.py` (new)
+- **Author:** Alexis Pattison
+- **Skill:** `prudent-snap-shot-rebuild` unchanged (behavior described in v1.5 is now on its normal cadence)
+
+**Why.** All three Snap Shot schedules have been paused since Wednesday's REM Comment wipe investigation (banner: `[PAUSED 2026-08-07 — REM Comment wipe investigation]`). The two follow-up L2 fixes have since landed and been verified end-to-end: yesterday's unposted-REM visibility (commit 9038a91) and today's (PropertyId, Unit#) unit-label normalization (commit d5106e8, verified against Barker Cypress Vacancy task 868g5mkpu — comment 90110258768064 posted successfully via manual dispatch run 31191836362). The workbook has fully rebuilt twice today with no regressions. Restoring cadence for Monday morning. Also cleaning up the SharePoint `_recovery/` folder created during the incident — the three RECOVERY snapshots (v01/v02/v04) served their diagnostic purpose and are no longer needed.
+
+**What changed.**
+- `snap-shot-nightly.yml` — `schedule: - cron: '17 8 * * *'` restored (4:17 AM ET EDT / 3:17 AM EST). Pause banner replaced with a two-line note recording the pause + restore dates.
+- `snap-shot-poll.yml` — `schedule: - cron: '*/15 11-22 * * 1-5'` restored (every 15 min, 7 AM–6 PM ET, Mon–Fri). Same pause-note treatment.
+- `snap-shot-weekly.yml` — `schedule: - cron: '23 9 * * 1'` restored (5:23 AM ET Mondays, Broker Beat refresh). Same pause-note treatment.
+- New `snap_shot/delete_recovery_folder.py` — uses the same delegated-refresh-token auth as `list_recovery_folder.py`, does a single `DELETE /drives/{DRIVE_ID}/items/{FOLDER_ID}` to drop the `_recovery/` folder recursively, then verifies. Idempotent (404-safe).
+- New `.github/workflows/snap-shot-delete-recovery-folder.yml` — one-off `workflow_dispatch`-only workflow that runs the delete script. Both the workflow file and the script will be removed in a follow-up commit once the one-off run confirms the folder is gone.
+
+**What did not change.**
+- No rebuild-logic changes. Restored crons are the exact expressions from the pre-incident state.
+- No changes to `snap-shot-recover-versions.yml` (kept in place; historical record of the incident lives in its previous runs).
+- No new secrets or permission scopes — the delete script reuses `APATTISON_MS_REFRESH_TOKEN` with the same `Sites.ReadWrite.All` scope the rebuild already exercises.
+- Ann's edits + REM Comment guard behavior in `rebuild.py` — unchanged; the 2026-08-06 archive folder and REM Comment floor guard are still the safeties on any live run.
+
+**Risk / rollback.**
+- Risk: **medium**. Re-enables ~48 fires/day on the poll + 1/day nightly + 1/week Monday. All three run behind the `snap-shot` concurrency group so they cannot overlap. The two L2 fixes have been verified; workbook rebuilds twice today (11:05 ET + 11:17 ET) landed cleanly on SharePoint with no comment loss.
+- Rollback (schedules): `git revert <sha>` restores the paused blocks. Alternatively, rename the three `.yml` files to `.yml.disabled` to hard-stop.
+- Rollback (recovery delete): once the delete workflow runs, the folder is gone from SharePoint's live view but retained in the site recycle bin for 93 days per tenant policy. A restore can be done from the SharePoint site recycle bin UI without touching the code.
+
+**Verification.**
+- Schedules: `.github/workflows/snap-shot-*.yml` schedule blocks are uncommented and grep-clean of `[PAUSED]`. First expected fire: Monday 5:23 AM ET (weekly), then 7:00 AM ET poll, then Tuesday 4:17 AM ET nightly.
+- Recovery delete: dispatch `Snap Shot — delete _recovery/ folder (one-off)`; run log prints `Found _recovery/`, contents list, `HTTP 204`, then `Verified: _recovery/ no longer exists.` Re-run search on SharePoint returns only `Leasing-Snap-Shot.xlsx` (no `_RECOVERY_v*` files).
+- Team notice: heads-up email sent to Ann + REM group Friday afternoon explaining the moccasin orange col P highlight from the L2 unposted-REM visibility change (commit 9038a91) so nobody is confused when they see it Monday.
+
+---
+
 ## 2026-08-07 — Snap Shot: normalize unit labels between AppFolio and ClickUp (L2)
 
 - **File(s):** `snap_shot/rebuild.py`

@@ -1,16 +1,19 @@
 name: Snap Shot — nightly rebuild
 
 on:
-  # [PAUSED 2026-08-07 — REM Comment wipe investigation] schedule:
-    # [PAUSED] # 4:17 AM ET daily — 08:17 UTC (EDT) / 09:17 UTC (EST).
-    # [PAUSED] # Offset from :00 on purpose — GitHub Actions throttles/drops on-the-hour
-    # [PAUSED] # scheduled events under load, and 08:00 UTC is one of the busiest cron
-    # [PAUSED] # slots globally. Moving to :17 dramatically improves reliability.
-    # [PAUSED] # (Previously '0 8 * * *' — that slot fired 0 out of 2 expected times
-    # [PAUSED] # after initial deploy, prompting this change on 2026-08-06.)
-    # [PAUSED] # We schedule for 08:17 UTC year-round; during EST (Nov–Mar) it fires at
-    # [PAUSED] # 3:17 AM local instead of 4:17 AM. Ann has confirmed either is fine.
-    # [PAUSED] - cron: '17 8 * * *'
+  schedule:
+    # 4:17 AM ET daily — 08:17 UTC (EDT) / 09:17 UTC (EST).
+    # Offset from :00 on purpose — GitHub Actions throttles/drops on-the-hour
+    # scheduled events under load, and 08:00 UTC is one of the busiest cron
+    # slots globally. Moving to :17 dramatically improves reliability.
+    # (Previously '0 8 * * *' — that slot fired 0 out of 2 expected times
+    # after initial deploy, prompting this change on 2026-08-06.)
+    # We schedule for 08:17 UTC year-round; during EST (Nov–Mar) it fires at
+    # 3:17 AM local instead of 4:17 AM. Ann has confirmed either is fine.
+    # Paused 2026-08-07 during REM Comment wipe investigation, restored
+    # 2026-08-07 after L2 unit-normalization fix (commit d5106e8) verified
+    # end-to-end against Barker Cypress Unit 155.
+    - cron: '17 8 * * *'
   workflow_dispatch:
     inputs:
       force_rebuild:

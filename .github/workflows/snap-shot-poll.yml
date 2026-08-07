@@ -1,11 +1,13 @@
 name: Snap Shot — on-demand poll
 
 on:
-  # [PAUSED 2026-08-07 — REM Comment wipe investigation] schedule:
-    # [PAUSED] # Every 15 minutes, 7 AM – 6 PM ET, Monday–Friday.
-    # [PAUSED] # 11:00–22:00 UTC covers 7 AM–6 PM EDT (summer).
-    # [PAUSED] # In EST (winter) that's 6 AM–5 PM local — acceptable per user.
-    # [PAUSED] - cron: '*/15 11-22 * * 1-5'
+  schedule:
+    # Every 15 minutes, 7 AM – 6 PM ET, Monday–Friday.
+    # 11:00–22:00 UTC covers 7 AM–6 PM EDT (summer).
+    # In EST (winter) that's 6 AM–5 PM local — acceptable per user.
+    # Paused 2026-08-07 during REM Comment wipe investigation, restored
+    # 2026-08-07 after L2 unit-normalization fix (commit d5106e8).
+    - cron: '*/15 11-22 * * 1-5'
   workflow_dispatch:
     inputs:
       force_rebuild:

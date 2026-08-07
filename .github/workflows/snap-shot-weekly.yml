@@ -1,13 +1,14 @@
 name: Snap Shot — weekly Broker Beat refresh
 
 on:
-  # [PAUSED 2026-08-07 — REM Comment wipe investigation] schedule:
-    # [PAUSED] # 5:00 AM ET Mondays — 09:00 UTC (EDT) / 10:00 UTC (EST).
-    # [PAUSED] # Same DST caveat as nightly; runs before the office opens either way.
-    # [PAUSED] # 5:23 AM ET Mondays — 09:23 UTC (EDT) / 10:23 UTC (EST). Offset from :00
-    # [PAUSED] # for the same reason as the nightly: GitHub Actions drops on-the-hour
-    # [PAUSED] # scheduled events under load.
-    # [PAUSED] - cron: '23 9 * * 1'
+  schedule:
+    # 5:23 AM ET Mondays — 09:23 UTC (EDT) / 10:23 UTC (EST). Offset from :00
+    # for the same reason as the nightly: GitHub Actions drops on-the-hour
+    # scheduled events under load. Same DST caveat as nightly; runs before
+    # the office opens either way.
+    # Paused 2026-08-07 during REM Comment wipe investigation, restored
+    # 2026-08-07 after L2 unit-normalization fix (commit d5106e8).
+    - cron: '23 9 * * 1'
   workflow_dispatch:
     inputs:
       force_rebuild:

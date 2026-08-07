@@ -1,0 +1,27 @@
+name: Snap Shot — delete _recovery/ folder (one-off)
+
+# One-time cleanup workflow. Deletes the SharePoint _recovery/ folder created
+# during the 2026-08-06 REM Comment wipe investigation. Safe to run more than
+# once — the delete script is idempotent. Delete this workflow file after
+# a successful run.
+
+on:
+  workflow_dispatch:
+
+jobs:
+  delete:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Delete _recovery/ folder
+        env:
+          APATTISON_MS_REFRESH_TOKEN: ${{ secrets.APATTISON_MS_REFRESH_TOKEN }}
+        run: python snap_shot/delete_recovery_folder.py
