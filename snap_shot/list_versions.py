@@ -39,18 +39,25 @@ def get_token():
 
 def graph_get(token, url):
     req = urllib.request.Request(url, headers={"Authorization": f"Bearer {token}"})
-    with urllib.request.urlopen(req, timeout=60) as r:
-        return r
+    try:
+        with urllib.request.urlopen(req, timeout=60) as r:
+            return r.read()
+    except urllib.error.HTTPError as e:
+        body = e.read().decode("utf-8", errors="replace")
+        print(f"[http {e.code}] {url}\n  body: {body[:500]}")
+        raise
 
 
 def main():
     token = get_token()
     print("[ok] Got Graph token")
 
-    # List versions
-    url = f"https://graph.microsoft.com/v1.0/drives/{DRIVE_ID}/items/{ITEM_ID}/versions"
-    r = graph_get(token, url)
-    data = json.loads(r.read())
+    # List versions (try site-scoped path first, then drive-only)
+    url = f"https://graph.microsoft.com/v1.0/sites/{SITE_ID}/drives/{DRIVE_ID}/items/{ITEM_ID}/versions"
+    print(f"[req] {url}")
+    body = graph_get(token, url)
+    print(f"[raw] first 300 bytes: {body[:300]!r}")
+    data = json.loads(body)
     versions = data.get("value", [])
     print(f"[ok] Found {len(versions)} versions")
     print()
@@ -82,8 +89,7 @@ def main():
         safe_ts = modified.replace("T", "_").split(".")[0].rstrip("Z")
         dl_url = f"https://graph.microsoft.com/v1.0/drives/{DRIVE_ID}/items/{ITEM_ID}/versions/{vid}/content"
         try:
-            r = graph_get(token, dl_url)
-            content = r.read()
+            content = graph_get(token, dl_url)
             local = f"recovery_out/snap_v{i:02d}_{safe_ts}.xlsx"
             with open(local, "wb") as f:
                 f.write(content)
