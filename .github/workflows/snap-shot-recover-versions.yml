@@ -24,6 +24,12 @@ jobs:
           mkdir -p recovery_out
           python snap_shot/list_versions.py 2>&1 | tee recovery_out/run.log
 
+      - name: List _recovery folder
+        continue-on-error: true
+        env:
+          APATTISON_MS_REFRESH_TOKEN: ${{ secrets.APATTISON_MS_REFRESH_TOKEN }}
+        run: python snap_shot/list_recovery_folder.py 2>&1 | tee -a recovery_out/run.log
+
       - name: Upload recovered files
         if: always()
         uses: actions/upload-artifact@v4
