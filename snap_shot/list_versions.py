@@ -71,7 +71,11 @@ def main():
     with open("recovery_out/versions.json", "w") as f:
         json.dump(versions, f, indent=2, default=str)
 
-    # Download the top 5 most recent versions — we can pick the right one after
+    # Download the top 6 most recent versions and upload each back to SharePoint
+    # under a _recovery/ folder so Alexis can open them directly. GitHub Actions
+    # artifact download is blocked by the agent proxy, so SharePoint is the only
+    # channel that reliably gets these files to her.
+    recovery_folder = "General/_Prudent Growth Operations, LLC/LEASING & ASSET MANAGEMENT/WORKING DOCS/_recovery"
     for i, v in enumerate(versions[:6]):
         vid = v.get("id")
         modified = v.get("lastModifiedDateTime", "unknown").replace(":", "").replace("-", "")
@@ -80,12 +84,27 @@ def main():
         try:
             r = graph_get(token, dl_url)
             content = r.read()
-            fname = f"recovery_out/snap_v{i:02d}_{safe_ts}.xlsx"
-            with open(fname, "wb") as f:
+            local = f"recovery_out/snap_v{i:02d}_{safe_ts}.xlsx"
+            with open(local, "wb") as f:
                 f.write(content)
-            print(f"[ok] Downloaded v{i} → {fname} ({len(content):,} bytes)")
+            print(f"[ok] Downloaded v{i} → {local} ({len(content):,} bytes)")
+
+            # Upload back to SharePoint
+            fname = f"Leasing-Snap-Shot__RECOVERY_v{i:02d}_{safe_ts}.xlsx"
+            up_path = urllib.parse.quote(f"{recovery_folder}/{fname}", safe="/")
+            up_url = f"https://graph.microsoft.com/v1.0/sites/{SITE_ID}/drives/{DRIVE_ID}/root:/{up_path}:/content"
+            req = urllib.request.Request(
+                up_url, data=content, method="PUT",
+                headers={
+                    "Authorization": f"Bearer {token}",
+                    "Content-Type": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                },
+            )
+            with urllib.request.urlopen(req, timeout=120) as ur:
+                resp = json.loads(ur.read())
+                print(f"[ok] Uploaded to SharePoint: {resp.get('webUrl','?')}")
         except Exception as e:
-            print(f"[warn] Failed to download v{i}: {e}")
+            print(f"[warn] Failed v{i}: {e}")
         time.sleep(1)
 
 
