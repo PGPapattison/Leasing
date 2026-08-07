@@ -2,6 +2,37 @@
 
 All notable changes to the Leasing automations repo. Newest at the top.
 
+## 2026-08-07 — Snap Shot: visibility for REM comments that couldn't post to ClickUp (L2)
+
+- **File(s):** `snap_shot/rebuild.py`
+- **Author:** Alexis Pattison
+- **Skill:** `prudent-snap-shot-rebuild` v1.3 → v1.4 (behavior added: unposted-REM email + orange col-P highlight)
+
+**Why.** After yesterday's REM Comment extractor fix (v1.3), the first production rebuild succeeded but silently skipped 1 comment: PropertyId=272 Unit 155 had no matching Renewal / Vacancy / Documents Workflow task, so `sync_rem_comments_to_clickup` logged a warning and moved on. The warning only lives inside the GitHub Actions log — nobody reads that in the normal course of business — so the REM's comment sat in col P with no signal that ClickUp didn't receive it. Alexis: "if a REM comment doesn't post because it can't find a task to post the comment, how do I know?"
+
+**What changed.**
+- `sync_rem_comments_to_clickup` return value changed from `dict` to `(dict, list)`. The new list is the "unposted" collection — one entry per unit whose comment couldn't post because no matching task was found. Each entry captures `pid`, `unit`, `tenant_id`, `rem` (REM name from mapping), and `comment` (the REM-authored text). Empty when everything posts cleanly.
+- New `send_unposted_rem_email(unposted_units, sharepoint_link)` helper — reuses the same Graph OAuth path as `send_error_email`. Sends a plain-text summary of each unposted unit (property id, unit, tenant id, REM, comment preview capped at 500 chars) to `ERROR_NOTIFICATION_TO` (apattison@prudentgrowth.com). Non-fatal: mail failure logs a warning; rebuild is already successful before this fires.
+- `run_build` — Step 7c added, right after `update_control_task_with_refresh_link`. Only fires on live runs (not dry-run) and only when `unposted_rem_units` is non-empty.
+- `build_workbook` — new `unposted_rem_units` kwarg. Filters into a per-property `_unposted_units_set` on each mapping entry so the renderer can do a simple set membership check.
+- `write_property_block` — new `unposted_units_set` local. When writing col P for a unit whose label is in that set, cell fill is overridden to `#FFE4B5` (soft moccasin orange), applied AFTER the row_fill / column-fill logic so it wins over the lease-expiry row tint AND the default gray. Everything else on that row is untouched.
+
+**What did not change.**
+- The sync logic itself — same warning is still logged, same "leave col P alone, do not stamp Last Synced" behavior. This change is pure visibility; it doesn't alter what posts or what doesn't post.
+- No change to the workbook write path for units that DO have matching tasks (col P fill still gray, Last Synced stamps still land in col Q).
+- No new dependencies, secrets, or environment variables.
+- ClickUp is not touched by this change.
+- Neither guard from yesterday's L3 was modified (REM Comment floor guard, archive folder, force_rebuild flag all still behave identically).
+
+**Risk / rollback.**
+- Risk: **low**. All changes are additive. The email is best-effort (wrapped in try/except); the orange fill is a cosmetic override on a single cell per unposted unit.
+- Rollback: `git revert <sha>` restores the tuple → dict return signature and drops the email + orange highlight. No data cleanup needed — the workbook renders fine either way.
+
+**Verification.**
+- Local synthetic test (`/tmp/highlight_test.xlsx`): 3-unit property with 1 unit in unposted set → confirmed col P renders as `#FFE4B5` for that unit only, other two units stay gray.
+- Local sync return-shape test: 2 comments (1 has a matching task, 1 doesn't) → confirmed `(stamps, unposted)` tuple where `unposted` contains only the unmatched unit with all 5 fields populated correctly.
+- Production verification: manual dispatch with `force_rebuild=true` — Unit 155 (PropertyId=272) still has no matching task, so the run should (a) send an email to apattison@prudentgrowth.com containing that unit, and (b) render col P for Unit 155 as orange in the uploaded workbook.
+
 ## 2026-08-07 — Snap Shot: fix REM Comment wipe + 4 safety guardrails (L3)
 
 - **File(s):** `snap_shot/rebuild.py`, `.github/workflows/snap-shot-nightly.yml`, `.github/workflows/snap-shot-poll.yml`, `.github/workflows/snap-shot-weekly.yml`, `snap_shot/RCA_2026-08-07.md`

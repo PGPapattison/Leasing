@@ -1015,12 +1015,17 @@ def sync_rem_comments_to_clickup(
     the REM to see — but do NOT stamp Last Synced, so a subsequent run
     will retry if the ClickUp task appears later.
 
-    Returns the mutated last_synced_by_prop_unit dict (with fresh stamps
-    for every successfully-posted comment).
+    Returns a tuple: (last_synced_by_prop_unit dict, unposted_units list).
+    - last_synced_by_prop_unit: the mutated dict with fresh stamps for
+      every successfully-posted comment.
+    - unposted_units: list of {"pid","unit","tenant_id","rem","comment"}
+      dicts for units whose REM comment could not post because no matching
+      ClickUp task was found. Fed to the workbook renderer (col P orange
+      highlight) and to the "unposted comments" email.
     """
     if not rem_comments_by_prop_unit:
         LOG.info("REM comment sync: no REM comments extracted from the workbook — nothing to sync.")
-        return last_synced_by_prop_unit
+        return last_synced_by_prop_unit, []
 
     # Build a fast lookup: (pid, unit_label) → tenant_id (from the rent
     # roll, so occupied units can also cross-reference their Renewal /
@@ -1044,6 +1049,7 @@ def sync_rem_comments_to_clickup(
     posts_by_task = 0
     now_str = now_et().strftime("%Y-%m-%d %H:%M ET")
 
+    unposted_units = []
     for (pid, unit_label), comment_text in rem_comments_by_prop_unit.items():
         comment_text = (comment_text or "").strip()
         if not comment_text:
@@ -1075,6 +1081,13 @@ def sync_rem_comments_to_clickup(
                 f"future run can retry once a matching task exists."
             )
             skipped_no_target += 1
+            unposted_units.append({
+                "pid": str(pid),
+                "unit": unit_label,
+                "tenant_id": tid or "",
+                "rem": rem_name_by_pid.get(pid, "REM"),
+                "comment": comment_text,
+            })
             continue
 
         rem_name = rem_name_by_pid.get(pid, "REM")
@@ -1110,7 +1123,7 @@ def sync_rem_comments_to_clickup(
         f"REM comment sync: {posted} unit(s) synced ({posts_by_task} ClickUp comment(s) posted), "
         f"{skipped_unchanged} unchanged skipped, {skipped_no_target} skipped (no matching task)."
     )
-    return last_synced_by_prop_unit
+    return last_synced_by_prop_unit, unposted_units
 
 
 def _build_refresh_section(sharepoint_url, mode):
@@ -1677,6 +1690,69 @@ def send_error_email(subject, body):
         LOG.info(f"Error-notification email sent to {ERROR_NOTIFICATION_TO}.")
 
 
+def send_unposted_rem_email(unposted_units, sharepoint_link=None):
+    """Fix A (2026-08-07): if a rebuild finished but ≥1 REM comment could
+    not post because no matching ClickUp task was found, email Alexis a
+    list of them so nothing sits unnoticed in col P. The REM's comment is
+    preserved in the workbook (highlighted orange per Fix D), so this is
+    a nudge to CREATE the missing ClickUp task, not a data-loss alert.
+
+    Non-fatal — a mail failure only logs a warning. The rebuild has
+    already succeeded before this runs.
+    """
+    if not unposted_units:
+        return
+    try:
+        token = get_graph_access_token()
+    except FatalError as e:
+        LOG.warning(f"Could not send unposted-REM email (token acquisition failed): {e}")
+        return
+
+    lines = []
+    lines.append(f"{len(unposted_units)} REM comment(s) could not post to ClickUp on the latest Snap Shot rebuild.")
+    lines.append("The comment text is preserved in col P of the workbook (highlighted orange).")
+    lines.append("Action: create a matching ClickUp task in Renewal Pipeline, Vacancy Pipeline, or Documents Workflow — the next rebuild will automatically post the comment.")
+    lines.append("")
+    lines.append(f"Rebuilt Snap Shot: {sharepoint_link or WORKBOOK_WEB_URL}")
+    lines.append("")
+    lines.append("─" * 60)
+    for i, u in enumerate(unposted_units, 1):
+        lines.append("")
+        lines.append(f"[{i}] Property ID {u.get('pid')} · Unit {u.get('unit')}")
+        if u.get("tenant_id"):
+            lines.append(f"    Tenant ID: {u.get('tenant_id')}")
+        lines.append(f"    REM: {u.get('rem')}")
+        comment = (u.get("comment") or "").strip()
+        if len(comment) > 500:
+            comment = comment[:500] + " …"
+        lines.append(f"    Comment:")
+        for cline in comment.splitlines() or [""]:
+            lines.append(f"      {cline}")
+    body = "\n".join(lines)
+
+    subject = f"[Snap Shot] {len(unposted_units)} REM comment(s) could not post to ClickUp"
+
+    payload = {
+        "message": {
+            "subject": subject,
+            "body": {"contentType": "Text", "content": body},
+            "toRecipients": [{"emailAddress": {"address": ERROR_NOTIFICATION_TO}}],
+        },
+        "saveToSentItems": "true",
+    }
+    r = http_request(
+        "POST", "https://graph.microsoft.com/v1.0/me/sendMail",
+        context="Unposted REM email send",
+        headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
+        json=payload, retries=1,
+    )
+    if r.status_code != 202:
+        LOG.warning(f"Unposted-REM email failed to send: HTTP {r.status_code}: {r.text[:300]}")
+    else:
+        LOG.info(f"Unposted-REM email sent to {ERROR_NOTIFICATION_TO} ({len(unposted_units)} unit(s)).")
+
+
+
 # ══════════════════════════════════════════════════════════════════════════
 # Ann's-edit extraction (round-trip from the current SharePoint workbook)
 # ══════════════════════════════════════════════════════════════════════════
@@ -2101,7 +2177,8 @@ def build_workbook(mapping, rent_roll_by_property, property_overrides,
                     clickup_summaries_by_prop_unit=None,
                     rem_comments_by_prop_unit=None,
                     last_synced_by_prop_unit=None,
-                    ticam_by_property=None):
+                    ticam_by_property=None,
+                    unposted_rem_units=None):
     """Build the Snap Shot workbook. `mapping` = property_mapping_all73.json
     contents. `rent_roll_by_property` = {appfolio_id_str: [unit_row, ...]}.
     `property_overrides` = {clickup_task_id: {broker_calls, property_flags,
@@ -2363,6 +2440,15 @@ def build_workbook(mapping, rent_roll_by_property, property_overrides,
             unit: stamp
             for (pid, unit), stamp in last_synced_by_prop_unit.items()
             if str(pid) == str(af_id)
+        }
+        # Fix A+D (2026-08-07): set of unit_labels whose REM comment could
+        # not post to ClickUp on this run (no matching task). Renderer will
+        # override col P fill to orange for these rows so the visual state
+        # matches the "unposted" email that also went out.
+        m["_unposted_units_set"] = {
+            u["unit"]
+            for u in (unposted_rem_units or [])
+            if str(u.get("pid")) == str(af_id)
         }
         # 2026 TICAM rates keyed by Snap Shot AppFolio display name (see
         # pull_ticam_rates_2026). None → no 2026 row on ClickUp → write_ticam_row
@@ -2708,6 +2794,7 @@ def write_property_block(ws, start_row, name, address, units, mapping_entry):
     # were unchanged since the last sync (so both P and Q pass through).
     rem_comments_by_unit = mapping_entry.get("_rem_comments_by_unit") or {}
     last_synced_by_unit = mapping_entry.get("_last_synced_by_unit") or {}
+    unposted_units_set = mapping_entry.get("_unposted_units_set") or set()
     prop_id_for_lookup = str(mapping_entry.get("appfolio_id") or "").strip()
     if not units:
         ws.row_dimensions[row].height = 18
@@ -2902,6 +2989,15 @@ def write_property_block(ws, start_row, name, address, units, mapping_entry):
                     # Same faint tint as ClickUp Summary — both are
                     # informational read-outs from the sync.
                     cell.fill = fill("F5F6F8")
+
+                # Fix D (2026-08-07): if this unit's REM comment could not
+                # post because no matching ClickUp task was found, override
+                # col P fill to soft orange so Ann/Leah see at a glance
+                # which rows still need a ClickUp task created. This runs
+                # AFTER the row_fill / column-fill logic so it wins over
+                # both the lease-expiry row tint AND the default gray.
+                if col_label == "REM ClickUp Comment" and unit_label in unposted_units_set:
+                    cell.fill = fill("FFE4B5")  # moccasin / soft orange
             row += 1
 
     data_end_row = row - 1
@@ -3078,8 +3174,9 @@ def run_build(mode, dry_run, force_rebuild=False):
     # Only posts when the comment text actually changed. Non-fatal: any
     # per-unit failure is logged and the workbook still rebuilds so REMs
     # don't lose visibility of their own draft comments.
+    unposted_rem_units = []
     try:
-        last_synced_by_prop_unit = sync_rem_comments_to_clickup(
+        last_synced_by_prop_unit, unposted_rem_units = sync_rem_comments_to_clickup(
             mapping=mapping,
             rem_comments_by_prop_unit=rem_comments_by_prop_unit,
             last_synced_by_prop_unit=last_synced_by_prop_unit,
@@ -3118,6 +3215,7 @@ def run_build(mode, dry_run, force_rebuild=False):
         rem_comments_by_prop_unit=rem_comments_by_prop_unit,
         last_synced_by_prop_unit=last_synced_by_prop_unit,
         ticam_by_property=ticam_by_property,
+        unposted_rem_units=unposted_rem_units,
     )
 
     # Step 5b: archive the current live Snap Shot before we overwrite it, so
@@ -3156,6 +3254,15 @@ def run_build(mode, dry_run, force_rebuild=False):
             update_control_task_with_refresh_link(sharepoint_link, mode)
         except Exception as e:  # noqa: BLE001
             LOG.warning(f"Failed to update ClickUp control task description: {e}")
+
+        # Step 7c (Fix A 2026-08-07): if any REM comments couldn't post to
+        # ClickUp because no matching task exists, email Alexis so the
+        # unposted units don't sit forgotten in col P (Fix D also colors
+        # them orange in the workbook). Non-fatal — mail failure only logs.
+        try:
+            send_unposted_rem_email(unposted_rem_units, sharepoint_link)
+        except Exception as e:  # noqa: BLE001
+            LOG.warning(f"Failed to send unposted-REM email: {e}")
 
     return output_path
 
