@@ -342,6 +342,49 @@ def unit_display(u):
     return v
 
 
+def _norm_unit_label(s):
+    """Normalize a unit label so AppFolio's ``unit_display()`` output and
+    ClickUp's ``Unit #`` custom field field will match even when one side has
+    a prefix and the other doesn't.
+
+    AppFolio ``unit_display()`` returns e.g. ``'Unit 155'`` (with prefix)
+    while a matching ClickUp Vacancy Pipeline task typically stores just
+    ``'155'`` (bare number). Without normalization the ``(pid, unit_label)``
+    lookup misses the task and the REM's ClickUp Comment never posts back.
+
+    Strips common suite/unit prefixes and the leading ``#`` symbol,
+    collapses whitespace, and lowercases so both sides key on the same
+    canonical value (e.g. ``'155'``, ``'300a'``, ``'b101'``).
+    """
+    if s is None:
+        return ""
+    t = str(s).strip().lower()
+    if not t:
+        return ""
+    # Strip common leading tokens: 'unit', 'ste', 'suite', '#'. Match with
+    # or without a following separator so 'Unit ' (bare with no number) or
+    # '#155' both normalize cleanly. Loop to handle rare stacked cases like
+    # 'unit ste 155'.
+    changed = True
+    while changed:
+        changed = False
+        for prefix in ("unit", "suite", "ste"):
+            if t == prefix:
+                t = ""
+                changed = True
+                break
+            if t.startswith(prefix) and t[len(prefix):len(prefix)+1] in (" ", "\t", "."):
+                t = t[len(prefix):].lstrip(" \t.")
+                changed = True
+                break
+        if t.startswith("#"):
+            t = t[1:].strip()
+            changed = True
+    # Collapse any internal whitespace to a single space.
+    t = " ".join(t.split())
+    return t
+
+
 def sort_units(units):
     """Sort units by unit label, natural sort."""
     def key(u):
@@ -668,15 +711,19 @@ def pull_lar_summaries():
             pid_raw = _cu_field_value(t, CU_PROPERTY_ID_FIELD)
             pid = str(pid_raw).strip() if pid_raw is not None else ""
             unit_raw = _cu_field_value(t, CU_UNIT_NUMBER_FIELD) if list_id == LAR_VACANCY_LIST_ID else None
-            unit = str(unit_raw).strip() if unit_raw is not None else ""
+            unit_norm = _norm_unit_label(unit_raw) if unit_raw is not None else ""
 
             # Summary indexing (first-list-wins).
+            # Key on the NORMALIZED unit label (e.g. '155') so the AppFolio
+            # side — which passes ``unit_display()`` output like 'Unit 155'
+            # through the same ``_norm_unit_label()`` at lookup time — can
+            # match ClickUp's bare 'Unit #' custom-field values.
             if summary_text:
                 if tid and tid not in summaries_by_tenant_id:
                     summaries_by_tenant_id[tid] = summary_text
                     added_summ_tid += 1
-                if list_id == LAR_VACANCY_LIST_ID and pid and unit:
-                    key = (pid, unit)
+                if list_id == LAR_VACANCY_LIST_ID and pid and unit_norm:
+                    key = (pid, unit_norm)
                     if key not in summaries_by_prop_unit:
                         summaries_by_prop_unit[key] = summary_text
                         added_summ_pu += 1
@@ -688,8 +735,8 @@ def pull_lar_summaries():
                 if task_id not in lst:
                     lst.append(task_id)
                     added_task_tid += 1
-            if list_id == LAR_VACANCY_LIST_ID and pid and unit:
-                key = (pid, unit)
+            if list_id == LAR_VACANCY_LIST_ID and pid and unit_norm:
+                key = (pid, unit_norm)
                 lst = task_ids_by_prop_unit.setdefault(key, [])
                 if task_id not in lst:
                     lst.append(task_id)
@@ -1027,16 +1074,18 @@ def sync_rem_comments_to_clickup(
         LOG.info("REM comment sync: no REM comments extracted from the workbook — nothing to sync.")
         return last_synced_by_prop_unit, []
 
-    # Build a fast lookup: (pid, unit_label) → tenant_id (from the rent
+    # Build a fast lookup: (pid, unit_norm) → tenant_id (from the rent
     # roll, so occupied units can also cross-reference their Renewal /
-    # Documents Workflow tasks via TenantId).
+    # Documents Workflow tasks via TenantId). Key on the NORMALIZED unit
+    # label so ClickUp's bare 'Unit #' custom-field values (e.g. '155')
+    # match AppFolio's ``unit_display()`` (e.g. 'Unit 155').
     tid_by_prop_unit = {}
     for pid, units in rent_roll_by_property.items():
         for u in units:
-            unit_label = unit_display(u)
+            unit_norm = _norm_unit_label(unit_display(u))
             tid = str(u.get("TenantId") or "").strip()
-            if unit_label and tid:
-                tid_by_prop_unit[(str(pid), unit_label)] = tid
+            if unit_norm and tid:
+                tid_by_prop_unit[(str(pid), unit_norm)] = tid
 
     rem_name_by_pid = {
         str(m.get("appfolio_id") or "").strip(): _rem_name_for_property(m)
@@ -1054,6 +1103,11 @@ def sync_rem_comments_to_clickup(
         comment_text = (comment_text or "").strip()
         if not comment_text:
             continue
+        # Normalize the workbook-side unit label so it matches the
+        # ClickUp-side dicts, which are now keyed on the normalized form.
+        # last_synced_by_prop_unit is still workbook-keyed (raw label),
+        # since it's what round-trips through the SharePoint copy.
+        unit_norm = _norm_unit_label(unit_label)
         new_hash = _comment_hash(comment_text)
         prior_hash = _last_synced_hash(last_synced_by_prop_unit.get((pid, unit_label), ""))
         if new_hash == prior_hash and prior_hash:
@@ -1065,12 +1119,12 @@ def sync_rem_comments_to_clickup(
         # can legitimately have hits on both paths (e.g., a Renewal task
         # keyed by TenantId AND a stale Vacancy task keyed by (pid,unit)).
         target_ids = []
-        tid = tid_by_prop_unit.get((pid, unit_label))
+        tid = tid_by_prop_unit.get((pid, unit_norm))
         if tid:
             for t in task_ids_by_tenant_id.get(tid, []):
                 if t not in target_ids:
                     target_ids.append(t)
-        for t in task_ids_by_prop_unit.get((pid, unit_label), []):
+        for t in task_ids_by_prop_unit.get((pid, unit_norm), []):
             if t not in target_ids:
                 target_ids.append(t)
 
@@ -2862,8 +2916,11 @@ def write_property_block(ws, start_row, name, address, units, mapping_entry):
             if tenant_id_val:
                 clickup_summary = clickup_summaries_by_tenant.get(str(tenant_id_val).strip(), "")
             if not clickup_summary and prop_id_for_lookup and unit_label:
+                # Vacancy Pipeline stores 'Unit #' as e.g. '155' (bare)
+                # while unit_label here is 'Unit 155'. Normalize before
+                # lookup so the two forms match.
                 clickup_summary = clickup_summaries_by_prop_unit.get(
-                    (prop_id_for_lookup, str(unit_label).strip()), ""
+                    (prop_id_for_lookup, _norm_unit_label(unit_label)), ""
                 )
 
             # REM ClickUp Comment + Last Synced values (Commit 2). Both are

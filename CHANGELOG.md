@@ -2,6 +2,38 @@
 
 All notable changes to the Leasing automations repo. Newest at the top.
 
+## 2026-08-07 — Snap Shot: normalize unit labels between AppFolio and ClickUp (L2)
+
+- **File(s):** `snap_shot/rebuild.py`
+- **Author:** Alexis Pattison
+- **Skill:** `prudent-snap-shot-rebuild` v1.4 → v1.5 (behavior fixed: (PropertyId, Unit#) matching for the Vacancy Pipeline)
+
+**Why.** Immediately after the L2 unposted-REM visibility change landed (commit 9038a91), Alexis pointed out that the one unit flagged as unposted — PropertyId=272, Unit 155, Barker Cypress Marketplace — actually DID have a matching task in the Vacancy Pipeline (ClickUp task `868g5mkpu`). The lookup missed because AppFolio's `unit_display()` returns `'Unit 155'` (with the 'Unit ' prefix) while the Vacancy task's `Unit #` custom field stores just `'155'` (bare number). The `sync_rem_comments_to_clickup()` dict lookup keyed on `(pid, unit_label)` never hit, the comment never posted, and the unit lit up orange in the workbook. Same asymmetry affects the ClickUp Summary passthrough in `write_property_block`. Alexis: "remember all rows that don't have a Tenant ID need to be matched to the Vacancy Pipeline using the Property ID and the Unit # and I found that corresponding task in that list."
+
+**What changed.**
+- New `_norm_unit_label(s)` helper (defined right after `unit_display()`). Strips common suite/unit prefixes (`unit`, `suite`, `ste`, `ste.`, leading `#`) and lowercases so `'Unit 155'`, `'155'`, `'#155'`, `'Suite 300A'`, and `'Ste. 300'` all reduce to a canonical form (`'155'`, `'155'`, `'155'`, `'300a'`, `'300'`).
+- `pull_lar_summaries()` — builds `summaries_by_prop_unit` and `task_ids_by_prop_unit` on the NORMALIZED unit key (was: raw stripped `str(unit_raw).strip()`). Same variable renamed from `unit` to `unit_norm` for clarity.
+- `sync_rem_comments_to_clickup()` — builds `tid_by_prop_unit` on the NORMALIZED unit key from `unit_display()`. Loop over `rem_comments_by_prop_unit.items()` now computes `unit_norm = _norm_unit_label(unit_label)` once per iteration and uses it for both the `tid_by_prop_unit` and `task_ids_by_prop_unit` lookups. `last_synced_by_prop_unit` still uses the raw `unit_label` because that dict round-trips through the SharePoint workbook and must stay workbook-keyed.
+- `write_property_block()` — the ClickUp Summary lookup for occupied-tenant-less rows now normalizes the workbook's `unit_label` before hitting `clickup_summaries_by_prop_unit`, matching the ClickUp-side keys built above.
+
+**What did not change.**
+- `unit_display()` itself — still returns 'Unit 155' style labels for the workbook.
+- Workbook keying (`rem_comments_by_prop_unit`, `last_synced_by_prop_unit`) — still keyed on the raw `unit_val` from the rent-roll cell, so REM edits round-trip through SharePoint the same way.
+- TenantId matching path — unchanged; only the (PropertyId, Unit#) path required normalization.
+- No changes to task creation, comment posting, or Last Synced stamp behavior beyond the fact that lookups now hit the tasks they were supposed to hit all along.
+- Yesterday's L2 unposted-REM visibility (email + orange col P) is untouched — it will just have fewer entries once this fix lands.
+
+**Risk / rollback.**
+- Risk: **low**. The normalizer is a pure function, unit-tested for 17 label variants. It only widens what matches — it cannot cause a wrong-task post because both sides are normalized identically, and false positives require two different physical units to normalize to the same canonical form (e.g. `'Unit 155'` and `'155'` at the SAME property, which is nonsensical).
+- Rollback: `git revert <sha>`. Restores the prefix-sensitive lookup; Unit 155 will re-appear in the unposted-REM orange list on the next run.
+
+**Verification.**
+- Local unit tests: 17/17 pass, covering `'Unit 155'`, `'155'`, `'Suite 300A'`, `'Ste 300A'`, `'Ste. 300'`, `'#155'`, `'# 155'`, `'B101'`, `None`, `''`, `'Unit '`, `'Unit'`, `'united'` (must NOT strip), `'Unit A101'`.
+- Local integration test: simulated `task_ids_by_prop_unit[('272', _norm_unit_label('155'))] = ['868g5mkpu']`; lookup with `('272', _norm_unit_label('Unit 155'))` returns `['868g5mkpu']`. Negative case (`'Unit 200'`) correctly misses.
+- Production verification: manual dispatch of the Snap Shot rebuild after this commit — the `unposted-REM` email should either not send (empty list) or omit PropertyId=272 Unit 155, and col P for that unit should render gray, not orange, in the next SharePoint upload.
+
+---
+
 ## 2026-08-07 — Snap Shot: visibility for REM comments that couldn't post to ClickUp (L2)
 
 - **File(s):** `snap_shot/rebuild.py`
