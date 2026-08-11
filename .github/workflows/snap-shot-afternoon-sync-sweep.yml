@@ -1,0 +1,47 @@
+name: Snap Shot — afternoon sync-health sweep
+
+on:
+  schedule:
+    # 5:00 PM ET, Monday–Friday.
+    # 21:00 UTC covers 5 PM EDT (summer). In EST (winter), this becomes
+    # 4 PM local — acceptable per Alexis; if it needs to shift back to
+    # 5 PM local in winter, bump this to '0 22 * * 1-5'.
+    - cron: '0 21 * * 1-5'
+  workflow_dispatch:
+    inputs:
+      stale_hours:
+        description: 'Hours a Last Synced stamp must exceed to be flagged (default 4)'
+        required: false
+        default: '4'
+        type: string
+
+concurrency:
+  group: snap-shot
+  cancel-in-progress: false
+
+jobs:
+  sweep:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: pip install -r snap_shot/requirements.txt
+
+      - name: Afternoon sync-health sweep
+        env:
+          APATTISON_MS_REFRESH_TOKEN: ${{ secrets.APATTISON_MS_REFRESH_TOKEN }}
+          APPFOLIO_API_SECRET: ${{ secrets.APPFOLIO_API_SECRET }}
+          CLICKUP_API_TOKEN: ${{ secrets.CLICKUP_API_TOKEN }}
+          SHAREPOINT_FOLDER_PATH: "General/_Prudent Growth Operations, LLC/LEASING & ASSET MANAGEMENT/WORKING DOCS"
+        run: |
+          python snap_shot/afternoon_sync_sweep.py \
+            --stale-hours="${{ github.event.inputs.stale_hours || '4' }}"
