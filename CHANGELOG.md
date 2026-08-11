@@ -4,10 +4,10 @@ All notable changes to the Leasing automations repo. Newest at the top.
 
 ## 2026-08-11 — Snap Shot: add afternoon sync-health sweep (5 PM weekdays) (L2)
 
-- **File(s):** `snap_shot/afternoon_sync_sweep.py` (new)
+- **File(s):** `snap_shot/afternoon_sync_sweep.py` (new), `.github/workflows/snap-shot-afternoon-sync-sweep.yml` (new)
 - **Author:** Alexis Pattison
 - **Skill:** none new; monitor lives alongside `prudent-snap-shot-rebuild` but doesn't touch the rebuild flow.
-- **Scheduling:** owned by a Perplexity recurring task (M–F 5 PM ET), NOT by a GitHub Actions cron. See the recurring task in this session for the exact schedule.
+- **Scheduling:** GitHub Actions cron `0 21 * * 1-5` (5 PM ET Mon–Fri EDT / 4 PM EST). Shares `snap-shot` concurrency group so it cannot overlap rebuilds. Also supports `workflow_dispatch` with a `stale_hours` input.
 
 **Why.** Now that `--mode=comment-sync` (added earlier today) pushes REM notes to ClickUp on the every-15-min poll cadence, we need an end-of-day check that catches any comment that failed to sync during the workday, before it leaks into the next morning. Requested by Alexis so she can troubleshoot the automation flow before REMs notice.
 
@@ -19,12 +19,12 @@ All notable changes to the Leasing automations repo. Newest at the top.
 
 **What did not change.**
 - Zero changes to `rebuild.py`, `sync_rem_comments_to_clickup`, or any comment-sync logic. This is a passive monitor — it only reads.
-- No changes to any GitHub Actions workflow file. Scheduling is handled by a Perplexity recurring task, not repo cron.
+- No changes to any existing workflow file. The one new workflow file only schedules this monitor; it does not touch nightly/weekly/poll.
 - The rebuild's own `send_unposted_rem_email` (which fires from inside the nightly rebuild when a comment can't find a ClickUp task) is unchanged and complementary — it catches a different failure mode (missing ClickUp task) at a different time (post-rebuild).
 
 **Risk / rollback.**
 - Risk: **low**. Read-only against SharePoint. Sends at most one email per weekday. Wrong-side failure mode: false positive (emails Alexis when nothing's actually broken) — easy to tune via `--stale-hours`. No workbook writes, no ClickUp writes.
-- Rollback: delete the recurring Perplexity task (`pplx-tool schedule_cron delete`). No repo-side revert needed, though `git rm snap_shot/afternoon_sync_sweep.py` cleans up if the monitor is retired.
+- Rollback: rename `.github/workflows/snap-shot-afternoon-sync-sweep.yml` to `.yml.disabled` to hard-stop, or `git revert 76e7a37` for the workflow + `git revert 9255dbd` for the script.
 
 **Verification.**
 - Local unit test on `/tmp/Leasing-Snap-Shot-dryrun.xlsx` with three injected states — fresh stamp (1h old → healthy), stale stamp (6h old → flagged), missing stamp (→ flagged). Result: 1 healthy / 2 flagged, correct reasons.
