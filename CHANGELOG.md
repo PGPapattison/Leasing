@@ -2,6 +2,37 @@
 
 All notable changes to the Leasing automations repo. Newest at the top.
 
+## 2026-08-11 — Snap Shot: add afternoon sync-health sweep (5 PM weekdays) (L2)
+
+- **File(s):** `snap_shot/afternoon_sync_sweep.py` (new)
+- **Author:** Alexis Pattison
+- **Skill:** none new; monitor lives alongside `prudent-snap-shot-rebuild` but doesn't touch the rebuild flow.
+- **Scheduling:** owned by a Perplexity recurring task (M–F 5 PM ET), NOT by a GitHub Actions cron. See the recurring task in this session for the exact schedule.
+
+**Why.** Now that `--mode=comment-sync` (added earlier today) pushes REM notes to ClickUp on the every-15-min poll cadence, we need an end-of-day check that catches any comment that failed to sync during the workday, before it leaks into the next morning. Requested by Alexis so she can troubleshoot the automation flow before REMs notice.
+
+**What changed.**
+- New standalone monitor `snap_shot/afternoon_sync_sweep.py`. Downloads the current SharePoint workbook, extracts col-P (REM comment) + col-Q (Last Synced) cells via `extract_ann_edits`, and flags any unit where col P has text AND col Q is either (a) blank, (b) unparseable, or (c) has a timestamp older than STALE_HOURS (default 4).
+- Silent when everything is healthy. Sends an email to `ERROR_NOTIFICATION_TO` (apattison@prudentgrowth.com) via Microsoft Graph only when at least one unit is flagged.
+- Also sends a distinct failure email if the SharePoint download itself fails, so silence isn't ambiguous.
+- Reuses `download_from_sharepoint`, `extract_ann_edits`, `get_graph_access_token`, `http_request`, `now_et`, `ET` timezone constant from `rebuild.py`. No new dependencies. No new secrets.
+
+**What did not change.**
+- Zero changes to `rebuild.py`, `sync_rem_comments_to_clickup`, or any comment-sync logic. This is a passive monitor — it only reads.
+- No changes to any GitHub Actions workflow file. Scheduling is handled by a Perplexity recurring task, not repo cron.
+- The rebuild's own `send_unposted_rem_email` (which fires from inside the nightly rebuild when a comment can't find a ClickUp task) is unchanged and complementary — it catches a different failure mode (missing ClickUp task) at a different time (post-rebuild).
+
+**Risk / rollback.**
+- Risk: **low**. Read-only against SharePoint. Sends at most one email per weekday. Wrong-side failure mode: false positive (emails Alexis when nothing's actually broken) — easy to tune via `--stale-hours`. No workbook writes, no ClickUp writes.
+- Rollback: delete the recurring Perplexity task (`pplx-tool schedule_cron delete`). No repo-side revert needed, though `git rm snap_shot/afternoon_sync_sweep.py` cleans up if the monitor is retired.
+
+**Verification.**
+- Local unit test on `/tmp/Leasing-Snap-Shot-dryrun.xlsx` with three injected states — fresh stamp (1h old → healthy), stale stamp (6h old → flagged), missing stamp (→ flagged). Result: 1 healthy / 2 flagged, correct reasons.
+- Stamp parser test: `"2026-08-11 15:22 ET · sha8:..."` → parses; garbage input → None; empty → None.
+- `python3 -m py_compile snap_shot/afternoon_sync_sweep.py` clean.
+- Email body rendered locally — sections in order, workbook link intact, troubleshooting checklist embedded.
+- Live verification: first scheduled fire tomorrow (Wed 2026-08-12) at 5 PM ET. Expect silence unless something is genuinely stale.
+
 ## 2026-08-11 — Snap Shot: add `--mode=comment-sync` for ~15-min REM comment latency (L3)
 
 - **File(s):** `snap_shot/rebuild.py`, `.github/workflows/snap-shot-poll.yml`
