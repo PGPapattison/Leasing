@@ -2,6 +2,41 @@
 
 All notable changes to the Leasing automations repo. Newest at the top.
 
+## 2026-08-11 — Snap Shot: add `--mode=comment-sync` for ~15-min REM comment latency (L3)
+
+- **File(s):** `snap_shot/rebuild.py`, `.github/workflows/snap-shot-poll.yml`
+- **Author:** Alexis Pattison
+- **Skill:** `prudent-snap-shot-rebuild` v1.5 → v1.6 (documents the new mode)
+
+**Why.** REMs (Ann + team) were reporting that comments they typed into the Prudent Snap Shot workbook in the morning weren't appearing in ClickUp until the next-day 4:17 AM nightly rebuild. Root cause: the every-15-min poll workflow only actually rebuilt the workbook when the ClickUp "Rebuild Snap Shot" checkbox was checked — otherwise it was a no-op. That checkbox is rarely used, so col-P notes typically waited 12–18 hours to reach ClickUp. Fix: add a lightweight comment-sync mode that runs on every poll fire, pushing REM notes to ClickUp within ≈15 min of typing.
+
+**What changed.**
+- New function `map_last_synced_addresses(workbook_bytes)` in `rebuild.py` — walks the workbook once and returns `{(PropertyId, unit_label): "Q42"}` for every unit row, reusing the exact block-detection heuristic that `extract_ann_edits` uses so key coverage matches 1:1.
+- New function `run_comment_sync(dry_run)` in `rebuild.py` — orchestrator: SharePoint download → race-condition guard → extract REM comments + Last Synced stamps → short-circuit if all comments already have matching sha8 (no ClickUp / AppFolio calls in that path) → otherwise pull AppFolio rent-roll + ClickUp LAR summaries → `sync_rem_comments_to_clickup` → patch only the changed Q-cells → upload. Does NOT re-render the workbook, so Ann's other in-flight edits are untouched.
+- New CLI mode `--mode=comment-sync` wired into `main()` argparse (adjacent to `poll`).
+- `snap-shot-poll.yml` now runs two steps on each fire: (a) the existing `--mode=poll` (honors the ClickUp checkbox) then (b) the new `--mode=comment-sync`. If step (a) does a full rebuild, step (b) sees all comments already synced and no-ops in <5s.
+- Header docstring in `rebuild.py` updated to list the new mode.
+
+**What did not change.**
+- Every existing safety guard remains in place unchanged:
+  - `RACE_CONDITION_WINDOW_MINUTES = 15` — comment-sync aborts if a non-automation edit landed within the window (deferred to next fire).
+  - `snap-shot` concurrency group — comment-sync cannot overlap nightly / weekly / poll rebuilds.
+  - sha8 dedup in `_comment_hash` / `_last_synced_hash` — unchanged text produces zero duplicate ClickUp comments.
+  - REM Comment floor guard in `check_rem_comment_floor` — unchanged; comment-sync doesn't rebuild, so the guard is irrelevant to this path.
+- No changes to workbook rendering, AppFolio pull logic, `sync_rem_comments_to_clickup` itself, or any nightly/weekly cadence.
+- No new secrets or permissions. Comment-sync uses the same `APATTISON_MS_REFRESH_TOKEN`, `APPFOLIO_API_SECRET`, `CLICKUP_API_TOKEN` the rebuild already uses.
+- ClickUp checkbox path preserved via `workflow_dispatch` on the poll workflow AND on each scheduled fire.
+
+**Risk / rollback.**
+- Risk: **medium**. Adds one extra script invocation per poll fire (~44 fires/day M–F). Runtime is dominated by AppFolio rent-roll pull (≈10s) + ClickUp LAR pull (≈10s) — but only when there are pending comments; the sha8 short-circuit skips both entirely when nothing is pending. Idempotency verified end-to-end via a local injection test: inject col-P comment → extract → patch Q → second extract → pending=0. ClickUp API budget (100 req/min) is nowhere near saturated.
+- Rollback: revert this commit (restores `poll`-only workflow). Or edit `.github/workflows/snap-shot-poll.yml` and delete the second step. No workbook state is stranded — the sha8 dedup means the next nightly rebuild would re-sync anything comment-sync missed.
+
+**Verification.**
+- Local unit test on `/tmp/Leasing-Snap-Shot-dryrun.xlsx`: `map_last_synced_addresses` returns 898 Q-cell entries; every key produced by `extract_ann_edits` has a matching address.
+- End-to-end simulation on Property 279 Parking Lot (Q28): injected "Test comment from Leah" → extract sees 1 REM comment → stamp written → re-extract confirms Last Synced = new stamp — idempotency check: pending=0 on second run. Test script embedded in the commit context.
+- `python3 -m py_compile snap_shot/rebuild.py` clean. `python3 snap_shot/rebuild.py --help` shows `comment-sync` in choices.
+- Live verification plan: watch first scheduled fire after merge (next `*/15 11-22 * * 1-5` slot). Confirm the two steps run in order and step (b) finishes in <15s. Also ask Ann to leave a test comment on any unit and confirm it lands in ClickUp within one poll cycle.
+
 ## 2026-08-07 — Snap Shot: restore paused schedules + delete _recovery/ folder (L3)
 
 - **File(s):** `.github/workflows/snap-shot-nightly.yml`, `.github/workflows/snap-shot-poll.yml`, `.github/workflows/snap-shot-weekly.yml`, `.github/workflows/snap-shot-delete-recovery-folder.yml` (new, one-off), `snap_shot/delete_recovery_folder.py` (new)

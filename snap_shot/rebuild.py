@@ -20,6 +20,13 @@ MODES
                     checkbox. If checked: run a full nightly rebuild, then
                     uncheck the box and comment "refreshed at HH:MM ET".
                     If not checked: log and exit 0 immediately.
+  --mode=comment-sync
+                    Lightweight REM-comment-only sync. Downloads workbook,
+                    posts any new col-P comments to ClickUp (sha8 dedup),
+                    patches just the Last Synced (col Q) cells, re-uploads.
+                    Does NOT rebuild the sheet body. Race-condition guard
+                    still applies. Designed for a short-cadence poll so
+                    REM notes reach ClickUp within minutes.
   --mode=dry-run    Build the workbook locally only. Never touches
                     SharePoint or ClickUp (no downloads, no uploads, no
                     writes). Ann's-edit inputs come from the bundled JSON
@@ -2037,6 +2044,88 @@ def extract_ann_edits(workbook_bytes):
     )
 
 
+# ─── Last-Synced cell address map (comment-sync mode) ────────────────────────
+
+def map_last_synced_addresses(workbook_bytes):
+    """Second pass over the workbook: return {(pid, unit_label): "Q42"} — the
+    Q-column cell address of each unit's Last Synced stamp. Mirrors the
+    block-detection heuristic used in ``extract_ann_edits`` so a change in
+    the layout only has to be fixed in one place — both functions walk the
+    same anchors.
+
+    Used by --mode=comment-sync to patch just the stamped Last Synced cells
+    and re-upload, without rebuilding the entire workbook. That preserves
+    Ann's in-flight edits and everyone else's REM comments even under a
+    high-frequency poll cadence.
+    """
+    addresses = {}
+    try:
+        wb = openpyxl.load_workbook(io.BytesIO(workbook_bytes), data_only=True)
+    except Exception as e:
+        raise FatalError(f"Could not open workbook to map Last Synced addresses: {e}")
+
+    if "Snap Shot" not in wb.sheetnames:
+        raise FatalError(
+            f"Workbook has no 'Snap Shot' tab (found: {wb.sheetnames}); refusing "
+            f"to map Last Synced addresses from an unexpected layout."
+        )
+    ws = wb["Snap Shot"]
+
+    def cell_text(row, col_letter):
+        v = ws[f"{col_letter}{row}"].value
+        return "" if v is None else str(v).strip()
+
+    max_row = ws.max_row
+    row = 1
+    while row <= max_row:
+        name_cell = cell_text(row, "B")
+        next_row_addr = cell_text(row + 1, "B")
+        pid_match = PROPERTY_ID_RE.search(next_row_addr)
+        if not (name_cell and pid_match):
+            row += 1
+            continue
+
+        property_id = pid_match.group(1)
+        block_start = row
+        try:
+            # Same DEAL ACTIVITY probe as extract_ann_edits.
+            header_row = block_start + 4
+            header_text = cell_text(header_row, "B")
+            if not header_text.upper().startswith("DEAL ACTIVITY"):
+                header_row = block_start + 3
+                header_text = cell_text(header_row, "B")
+            notes_start = header_row + 1 if header_text.upper().startswith("DEAL ACTIVITY") else header_row
+
+            # Find RENT ROLL header (same 25-row scan window as extract_ann_edits).
+            rent_roll_header_row = None
+            for probe in range(notes_start, min(notes_start + 25, max_row + 1)):
+                if cell_text(probe, "B").upper() == "RENT ROLL":
+                    rent_roll_header_row = probe
+                    break
+            if not rent_roll_header_row:
+                row = block_start + 1
+                continue
+
+            data_row = rent_roll_header_row + 2  # header row + col-header row
+            while data_row <= max_row:
+                unit_val = cell_text(data_row, "B")
+                if not unit_val or unit_val.upper() == "TOTALS":
+                    break
+                # Q-cell holds Last Synced for this (property, unit).
+                addresses[(property_id, unit_val)] = f"Q{data_row}"
+                data_row += 1
+            row = data_row
+        except Exception as e:  # noqa: BLE001
+            LOG.warning(
+                f"Last-Synced address map: failed to parse block at row {block_start} "
+                f"(PropertyId={property_id}): {e}"
+            )
+            row = block_start + 1
+
+    LOG.info(f"Last-Synced address map: {len(addresses)} unit cell(s) located.")
+    return addresses
+
+
 # ─── REM Comment safety guard (Commit 4 — RCA_2026-08-07 fix #3) ──────────────
 
 REM_COUNT_STATE_PATH = os.path.join(DATA_DIR, "last_rem_count.json")
@@ -3140,6 +3229,154 @@ def write_property_block(ws, start_row, name, address, units, mapping_entry):
 # Orchestration
 # ══════════════════════════════════════════════════════════════════════════
 
+def run_comment_sync(dry_run=False):
+    """Lightweight REM-comment-only sync.
+
+    Purpose: post REM-authored col-P comments to ClickUp within minutes of
+    the REM typing them, instead of waiting for the next nightly rebuild.
+
+    Difference from ``run_build``:
+      * Does NOT re-render the workbook. Only patches Last Synced (col Q)
+        cells of units whose comment was just posted, then re-uploads.
+      * Does NOT refresh AppFolio rent-roll rents, ClickUp Summary column,
+        TICAM rates, Broker Active Interest, or anything else displayed to
+        the reader. Those still refresh on the nightly full rebuild.
+      * Still respects the SharePoint race-condition guard — aborts if a
+        non-automation edit landed within RACE_CONDITION_WINDOW_MINUTES.
+      * Still uses the same sha8 hash dedup, so re-runs on unchanged text
+        are no-ops (zero duplicate ClickUp comments).
+
+    Returns None if nothing was uploaded (race condition, no comments, or
+    every comment already synced). Returns the local patched-workbook path
+    otherwise. Raises FatalError on unrecoverable problems.
+    """
+    mapping = load_json(MAPPING_PATH)
+
+    # Step 1: download current SharePoint workbook + race-condition check.
+    if dry_run:
+        LOG.info("comment-sync dry-run: skipping SharePoint download/race-check entirely.")
+        current_wb_bytes = None
+    else:
+        current_wb_bytes, last_modified_by, last_modified_at = download_from_sharepoint()
+        if is_race_condition(last_modified_by, last_modified_at):
+            LOG.info("comment-sync skipped — workbook edited within race window.")
+            return None
+
+    if not current_wb_bytes:
+        LOG.info("comment-sync: no workbook available (first run or dry-run). Nothing to sync.")
+        return None
+
+    # Step 2: extract REM comments + existing Last Synced stamps + Q-cell map.
+    (
+        _prop_overrides,
+        _unit_notes,
+        _market_rent_overrides,
+        rem_comments_by_prop_unit,
+        last_synced_by_prop_unit,
+    ) = extract_ann_edits(current_wb_bytes)
+
+    if not rem_comments_by_prop_unit:
+        LOG.info("comment-sync: no REM comments found in workbook. Nothing to do.")
+        return None
+
+    # Determine whether anything is actually pending BEFORE any AppFolio /
+    # ClickUp API calls. If every REM comment already has a matching sha8 in
+    # Last Synced, there is nothing to post — skip both pulls entirely.
+    pending = 0
+    for key, text in rem_comments_by_prop_unit.items():
+        text_norm = (text or "").strip()
+        if not text_norm:
+            continue
+        new_hash = _comment_hash(text_norm)
+        prior_hash = _last_synced_hash(last_synced_by_prop_unit.get(key, ""))
+        if new_hash != prior_hash:
+            pending += 1
+    if pending == 0:
+        LOG.info(
+            f"comment-sync: all {len(rem_comments_by_prop_unit)} REM comment(s) already "
+            f"synced (sha8 matches). Skipping AppFolio + ClickUp pulls and re-upload."
+        )
+        return None
+
+    LOG.info(f"comment-sync: {pending} REM comment(s) pending sync — pulling AppFolio + ClickUp.")
+
+    # Step 3: minimal AppFolio + ClickUp pulls.
+    rent_roll_by_property = pull_appfolio_rent_roll_by_property()
+    try:
+        (
+            _summaries_by_tenant,
+            _summaries_by_prop_unit,
+            task_ids_by_tenant_id,
+            task_ids_by_prop_unit,
+        ) = pull_lar_summaries()
+    except Exception as e:  # noqa: BLE001
+        LOG.warning(f"comment-sync: LAR summaries pull failed — aborting so nothing goes half-posted: {e}")
+        return None
+
+    # Step 4: capture Q-cell addresses BEFORE the sync mutates the dict.
+    q_addresses = map_last_synced_addresses(current_wb_bytes)
+    stamps_before = dict(last_synced_by_prop_unit)
+
+    # Step 5: post to ClickUp. Mutates last_synced_by_prop_unit in place.
+    try:
+        last_synced_by_prop_unit, _unposted = sync_rem_comments_to_clickup(
+            mapping=mapping,
+            rem_comments_by_prop_unit=rem_comments_by_prop_unit,
+            last_synced_by_prop_unit=last_synced_by_prop_unit,
+            task_ids_by_tenant_id=task_ids_by_tenant_id,
+            task_ids_by_prop_unit=task_ids_by_prop_unit,
+            rent_roll_by_property=rent_roll_by_property,
+            dry_run=dry_run,
+        )
+    except Exception as e:  # noqa: BLE001
+        LOG.warning(f"comment-sync: sync_rem_comments_to_clickup raised — aborting upload: {e}")
+        return None
+
+    # Step 6: identify which Q-cells changed and patch just those.
+    changed_keys = [k for k, v in last_synced_by_prop_unit.items() if stamps_before.get(k) != v]
+    if not changed_keys:
+        LOG.info("comment-sync: no Last Synced stamps changed — nothing to upload.")
+        return None
+
+    if dry_run:
+        LOG.info(
+            f"comment-sync (DRY RUN): would patch {len(changed_keys)} Last Synced cell(s) "
+            f"and re-upload. Skipping actual write."
+        )
+        return None
+
+    # Load workbook, patch Q-cells, save locally, upload.
+    try:
+        wb = openpyxl.load_workbook(io.BytesIO(current_wb_bytes))
+    except Exception as e:
+        raise FatalError(f"comment-sync: could not open workbook to patch Last Synced cells: {e}")
+    ws = wb["Snap Shot"]
+
+    patched = 0
+    missing = 0
+    for key in changed_keys:
+        addr = q_addresses.get(key)
+        if not addr:
+            missing += 1
+            LOG.warning(
+                f"comment-sync: no Q-cell address for {key!r} — stamp will be lost until nightly rebuild."
+            )
+            continue
+        ws[addr].value = last_synced_by_prop_unit[key]
+        patched += 1
+
+    LOG.info(
+        f"comment-sync: patched {patched} Last Synced cell(s); "
+        f"{missing} skipped (address not found)."
+    )
+
+    output_path = os.path.join(LOCAL_BUILD_DIR, "Leasing-Snap-Shot.xlsx")
+    wb.save(output_path)
+    upload_to_sharepoint(output_path)
+    LOG.info(f"comment-sync: uploaded patched workbook — {patched} stamp(s) recorded.")
+    return output_path
+
+
 def run_build(mode, dry_run, force_rebuild=False):
     """Executes steps 1-6 of the brief's script structure. Returns the local
     output file path. Raises FatalError on any unrecoverable problem.
@@ -3352,8 +3589,9 @@ def poll_and_maybe_rebuild(force_rebuild=False):
 def main():
     parser = argparse.ArgumentParser(description="Rebuild the Leasing Snap Shot workbook.")
     parser.add_argument(
-        "--mode", choices=["nightly", "weekly", "poll", "dry-run"], required=True,
-        help="nightly | weekly | poll | dry-run",
+        "--mode", choices=["nightly", "weekly", "poll", "comment-sync", "dry-run"],
+        required=True,
+        help="nightly | weekly | poll | comment-sync | dry-run",
     )
     parser.add_argument(
         "--force-rebuild", action="store_true",
@@ -3374,6 +3612,13 @@ def main():
     try:
         if args.mode == "poll":
             rc = poll_and_maybe_rebuild(force_rebuild=args.force_rebuild)
+        elif args.mode == "comment-sync":
+            output_path = run_comment_sync(dry_run=False)
+            if output_path is None:
+                LOG.info("comment-sync: no upload (nothing pending, race guard, or dry-run).")
+            else:
+                LOG.info(f"comment-sync done. Output: {output_path}")
+            rc = 0
         else:
             output_path = run_build(mode=args.mode, dry_run=dry_run, force_rebuild=args.force_rebuild)
             if output_path is None:
