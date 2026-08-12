@@ -283,6 +283,19 @@ class FatalError(Exception):
     emails it (unless dry-run), and exits non-zero."""
 
 
+class WorkbookLockedError(Exception):
+    """Raised when SharePoint returns HTTP 423 'resourceLocked' on the upload,
+    which happens when a REM/broker has the workbook open in Excel at the
+    moment the automation tries to save its patched copy.
+
+    Distinct from FatalError so the run_build / run_comment_sync layer can
+    (a) NOT treat it as a hard failure that pages the on-call, and
+    (b) roll back any ClickUp comments posted earlier in the same run —
+    otherwise the next run's sha8 dedup, seeing no Last Synced stamp, will
+    happily re-post the same comment and REMs get duplicates on their tasks.
+    """
+
+
 # ══════════════════════════════════════════════════════════════════════════
 # Small utilities
 # ══════════════════════════════════════════════════════════════════════════
@@ -564,6 +577,10 @@ def cu_set_field(task_id, field_id, value):
 
 
 def cu_post_comment(task_id, text):
+    """Post a comment to a ClickUp task. Returns the created comment's id on
+    success, or None on failure. The id is used by the SharePoint-lock
+    rollback path in run_comment_sync / run_build to DELETE just-posted
+    comments when the workbook save afterwards fails."""
     r = http_request(
         "POST", f"{CU_BASE}/task/{task_id}/comment",
         context=f"ClickUp comment on {task_id}",
@@ -572,6 +589,31 @@ def cu_post_comment(task_id, text):
     )
     if r.status_code not in (200, 201):
         LOG.warning(f"ClickUp comment post failed on task {task_id}: HTTP {r.status_code}: {r.text[:300]}")
+        return None
+    try:
+        return (r.json() or {}).get("id")
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def cu_delete_comment(comment_id):
+    """Delete a ClickUp comment by id. Best-effort — logs on failure but
+    does NOT raise. Used by the workbook-locked rollback path."""
+    if not comment_id:
+        return False
+    try:
+        r = http_request(
+            "DELETE", f"{CU_BASE}/comment/{comment_id}",
+            context=f"ClickUp comment delete {comment_id}",
+            headers=cu_headers(),
+        )
+        if r.status_code not in (200, 204):
+            LOG.warning(f"ClickUp comment delete failed for {comment_id}: HTTP {r.status_code}: {r.text[:300]}")
+            return False
+        return True
+    except Exception as e:  # noqa: BLE001
+        LOG.warning(f"ClickUp comment delete raised for {comment_id}: {e}")
+        return False
 
 
 def cu_update_task_description(task_id, markdown_description):
@@ -1069,17 +1111,21 @@ def sync_rem_comments_to_clickup(
     the REM to see — but do NOT stamp Last Synced, so a subsequent run
     will retry if the ClickUp task appears later.
 
-    Returns a tuple: (last_synced_by_prop_unit dict, unposted_units list).
+    Returns a tuple: (last_synced_by_prop_unit, unposted_units, posted_comment_ids).
     - last_synced_by_prop_unit: the mutated dict with fresh stamps for
       every successfully-posted comment.
     - unposted_units: list of {"pid","unit","tenant_id","rem","comment"}
       dicts for units whose REM comment could not post because no matching
       ClickUp task was found. Fed to the workbook renderer (col P orange
       highlight) and to the "unposted comments" email.
+    - posted_comment_ids: list of ClickUp comment ids we created THIS run.
+      Used by the workbook-locked rollback path (see run_comment_sync /
+      run_build) to DELETE these comments if the SharePoint upload fails,
+      so the next successful run's sha8 dedup doesn't post duplicates.
     """
     if not rem_comments_by_prop_unit:
         LOG.info("REM comment sync: no REM comments extracted from the workbook — nothing to sync.")
-        return last_synced_by_prop_unit, []
+        return last_synced_by_prop_unit, [], []
 
     # Build a fast lookup: (pid, unit_norm) → tenant_id (from the rent
     # roll, so occupied units can also cross-reference their Renewal /
@@ -1106,6 +1152,7 @@ def sync_rem_comments_to_clickup(
     now_str = now_et().strftime("%Y-%m-%d %H:%M ET")
 
     unposted_units = []
+    posted_comment_ids = []
     for (pid, unit_label), comment_text in rem_comments_by_prop_unit.items():
         comment_text = (comment_text or "").strip()
         if not comment_text:
@@ -1163,8 +1210,10 @@ def sync_rem_comments_to_clickup(
         else:
             for task_id in target_ids:
                 try:
-                    cu_post_comment(task_id, body)
+                    comment_id = cu_post_comment(task_id, body)
                     posts_by_task += 1
+                    if comment_id:
+                        posted_comment_ids.append(comment_id)
                 except Exception as e:  # noqa: BLE001
                     LOG.warning(
                         f"REM comment sync: post failed on task {task_id} "
@@ -1184,7 +1233,7 @@ def sync_rem_comments_to_clickup(
         f"REM comment sync: {posted} unit(s) synced ({posts_by_task} ClickUp comment(s) posted), "
         f"{skipped_unchanged} unchanged skipped, {skipped_no_target} skipped (no matching task)."
     )
-    return last_synced_by_prop_unit, unposted_units
+    return last_synced_by_prop_unit, unposted_units, posted_comment_ids
 
 
 def _build_refresh_section(sharepoint_url, mode):
@@ -1546,7 +1595,22 @@ def upload_to_sharepoint(local_path):
     """Upload (overwrite) the workbook to SharePoint. Uses a simple PUT for
     files under the Graph 4MB simple-upload limit, and a chunked resumable
     upload session for anything larger (mirrors the notice-letter-1-send
-    large-file Graph upload pattern)."""
+    large-file Graph upload pattern).
+
+    Raises WorkbookLockedError on HTTP 423 'resourceLocked' (someone has the
+    file open in Excel). We retry once after LOCK_RETRY_WAIT_SEC because most
+    Excel-Online sessions release the lock within ~30s of idle, then give up
+    and let the caller handle rollback.
+    """
+    LOCK_RETRY_WAIT_SEC = 30
+
+    def _classify_and_raise(r, context):
+        if r.status_code == 423:
+            raise WorkbookLockedError(
+                f"SharePoint {context} rejected as HTTP 423 resourceLocked: {r.text[:300]}"
+            )
+        raise FatalError(f"SharePoint {context} failed: HTTP {r.status_code}: {r.text[:300]}")
+
     token = get_graph_access_token()
     size = os.path.getsize(local_path)
 
@@ -1557,16 +1621,27 @@ def upload_to_sharepoint(local_path):
         )
         with open(local_path, "rb") as f:
             data = f.read()
-        r = http_request(
-            "PUT", url, context="SharePoint simple upload",
-            headers={
-                "Authorization": f"Bearer {token}",
-                "Content-Type": "application/octet-stream",
-            },
-            data=data, timeout=HTTP_TIMEOUT_LONG_SEC,
-        )
+
+        def _put_simple():
+            return http_request(
+                "PUT", url, context="SharePoint simple upload",
+                headers={
+                    "Authorization": f"Bearer {token}",
+                    "Content-Type": "application/octet-stream",
+                },
+                data=data, timeout=HTTP_TIMEOUT_LONG_SEC,
+            )
+
+        r = _put_simple()
+        if r.status_code == 423:
+            LOG.warning(
+                f"SharePoint upload got HTTP 423 (workbook locked). "
+                f"Sleeping {LOCK_RETRY_WAIT_SEC}s and retrying once."
+            )
+            time.sleep(LOCK_RETRY_WAIT_SEC)
+            r = _put_simple()
         if r.status_code not in (200, 201):
-            raise FatalError(f"SharePoint upload failed: HTTP {r.status_code}: {r.text[:300]}")
+            _classify_and_raise(r, "upload")
         LOG.info(f"Uploaded workbook to SharePoint via simple PUT ({size:,} bytes).")
         return r.json()
 
@@ -1575,13 +1650,23 @@ def upload_to_sharepoint(local_path):
         f"https://graph.microsoft.com/v1.0/sites/{SITE_ID}/drives/{DRIVE_ID}"
         f"/root:/{SHAREPOINT_ITEM_PATH}:/createUploadSession"
     )
-    r = http_request(
-        "POST", session_url, context="SharePoint create upload session",
-        headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
-        json={"item": {"@microsoft.graph.conflictBehavior": "replace"}},
-    )
+    def _create_session():
+        return http_request(
+            "POST", session_url, context="SharePoint create upload session",
+            headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
+            json={"item": {"@microsoft.graph.conflictBehavior": "replace"}},
+        )
+
+    r = _create_session()
+    if r.status_code == 423:
+        LOG.warning(
+            f"SharePoint upload-session creation got HTTP 423 (workbook locked). "
+            f"Sleeping {LOCK_RETRY_WAIT_SEC}s and retrying once."
+        )
+        time.sleep(LOCK_RETRY_WAIT_SEC)
+        r = _create_session()
     if r.status_code not in (200, 201):
-        raise FatalError(f"SharePoint upload session creation failed: HTTP {r.status_code}: {r.text[:300]}")
+        _classify_and_raise(r, "upload session creation")
     upload_url = r.json()["uploadUrl"]
 
     with open(local_path, "rb") as f:
@@ -1749,6 +1834,67 @@ def send_error_email(subject, body):
         LOG.error(f"Error-notification email failed to send: HTTP {r.status_code}: {r.text[:300]}")
     else:
         LOG.info(f"Error-notification email sent to {ERROR_NOTIFICATION_TO}.")
+
+
+def rollback_locked_workbook(posted_comment_ids, context, error_detail):
+    """Called when SharePoint returns 423 (workbook locked in Excel) AFTER
+    we've already posted REM comments to ClickUp in the same run.
+
+    Deletes each comment we created this run so the next successful run's
+    sha8 dedup, which will still see no Last Synced stamp for those units
+    (because the upload rolled back), correctly RE-posts them exactly once
+    instead of appending duplicates.
+
+    Sends a distinct "postponed" notice to Alexis — not a page. The workbook
+    itself is fine (it was never overwritten); the failure is transient and
+    self-heals as soon as the human closes their Excel session.
+
+    Never raises. Best-effort deletes; anything that can't be deleted is
+    listed in the notice so Alexis can manually clean up.
+    """
+    LOG.warning(
+        f"{context}: SharePoint upload rejected as workbook-locked (HTTP 423). "
+        f"Rolling back {len(posted_comment_ids)} ClickUp comment(s) posted this run "
+        f"so the next run posts them once, not twice."
+    )
+
+    deleted, failed = [], []
+    for cid in posted_comment_ids:
+        (deleted if cu_delete_comment(cid) else failed).append(cid)
+
+    LOG.info(
+        f"{context}: rollback complete — {len(deleted)} deleted, {len(failed)} could not delete."
+    )
+
+    lines = [
+        f"Snap Shot {context} was postponed because the workbook is currently open in Excel.",
+        "",
+        "The automation waited 30 seconds and tried again — still locked. Rather than fail",
+        "the run, we ROLLED BACK the ClickUp comments this run had already posted, so the",
+        "next successful run re-posts them exactly once (no duplicate comments on REM tasks).",
+        "",
+        f"ClickUp comments deleted (rolled back): {len(deleted)}",
+        f"ClickUp comments that could NOT be deleted: {len(failed)}",
+        "",
+        "Action required: none — self-heals the next time the workbook is closed and the",
+        "comment-sync runs (every 15 minutes on the poll workflow).",
+        "",
+        f"Underlying SharePoint response:",
+        f"  {error_detail[:400]}",
+    ]
+    if failed:
+        lines.append("")
+        lines.append("Comment ids that failed to delete (manual cleanup may be needed on next run):")
+        for cid in failed:
+            lines.append(f"  • {cid}")
+
+    try:
+        send_error_email(
+            subject=f"[Snap Shot] {context} postponed — workbook locked in Excel ({len(deleted)} rollback(s))",
+            body="\n".join(lines),
+        )
+    except Exception as e:  # noqa: BLE001
+        LOG.warning(f"{context}: rollback notice email failed (non-fatal): {e}")
 
 
 def send_unposted_rem_email(unposted_units, sharepoint_link=None):
@@ -3318,8 +3464,9 @@ def run_comment_sync(dry_run=False):
     stamps_before = dict(last_synced_by_prop_unit)
 
     # Step 5: post to ClickUp. Mutates last_synced_by_prop_unit in place.
+    posted_comment_ids = []
     try:
-        last_synced_by_prop_unit, _unposted = sync_rem_comments_to_clickup(
+        last_synced_by_prop_unit, _unposted, posted_comment_ids = sync_rem_comments_to_clickup(
             mapping=mapping,
             rem_comments_by_prop_unit=rem_comments_by_prop_unit,
             last_synced_by_prop_unit=last_synced_by_prop_unit,
@@ -3372,7 +3519,15 @@ def run_comment_sync(dry_run=False):
 
     output_path = os.path.join(LOCAL_BUILD_DIR, "Leasing-Snap-Shot.xlsx")
     wb.save(output_path)
-    upload_to_sharepoint(output_path)
+    try:
+        upload_to_sharepoint(output_path)
+    except WorkbookLockedError as e:
+        rollback_locked_workbook(
+            posted_comment_ids=posted_comment_ids,
+            context="comment-sync",
+            error_detail=str(e),
+        )
+        return None
     LOG.info(f"comment-sync: uploaded patched workbook — {patched} stamp(s) recorded.")
     return output_path
 
@@ -3469,8 +3624,9 @@ def run_build(mode, dry_run, force_rebuild=False):
     # per-unit failure is logged and the workbook still rebuilds so REMs
     # don't lose visibility of their own draft comments.
     unposted_rem_units = []
+    posted_comment_ids_for_rollback = []
     try:
-        last_synced_by_prop_unit, unposted_rem_units = sync_rem_comments_to_clickup(
+        last_synced_by_prop_unit, unposted_rem_units, posted_comment_ids_for_rollback = sync_rem_comments_to_clickup(
             mapping=mapping,
             rem_comments_by_prop_unit=rem_comments_by_prop_unit,
             last_synced_by_prop_unit=last_synced_by_prop_unit,
@@ -3525,7 +3681,15 @@ def run_build(mode, dry_run, force_rebuild=False):
 
     # Step 6: upload to SharePoint (skip entirely for dry-run).
     if not dry_run:
-        upload_result = upload_to_sharepoint(output_path) or {}
+        try:
+            upload_result = upload_to_sharepoint(output_path) or {}
+        except WorkbookLockedError as e:
+            rollback_locked_workbook(
+                posted_comment_ids=posted_comment_ids_for_rollback,
+                context=f"rebuild mode={mode}",
+                error_detail=str(e),
+            )
+            return None
         LOG.info(f"Uploaded {output_path} to SharePoint as {WORKBOOK_FILENAME}.")
 
         # Prefer Graph's `webUrl` — that's the "_layouts/15/Doc.aspx?..."

@@ -2,6 +2,45 @@
 
 All notable changes to the Leasing automations repo. Newest at the top.
 
+## 2026-08-12 — Snap Shot: rollback ClickUp comments when SharePoint returns HTTP 423 (workbook locked in Excel) (L2)
+
+- **File(s):** `snap_shot/rebuild.py`, `snap_shot/tests/test_lock_rollback.py` (new)
+- **Author:** Alexis Pattison
+- **Skill:** `prudent-snap-shot-rebuild` — no user-visible workflow change; skill markdown does not need bumping.
+
+**Why.** The 10:42 AM ET poll run on 2026-08-12 (run 31608260834) failed with HTTP 423 `resourceLocked` from SharePoint at the end of a comment-sync cycle, right after successfully posting 10 REM comments to ClickUp. The workbook was open in Excel at the moment we tried to save the patched Q-column (Last Synced) copy, so SharePoint refused the upload. The 10 comments landed on ClickUp tasks, but the paired Last Synced stamps never made it back to the workbook — meaning the next successful comment-sync run would see the same 10 comments as "still pending" (missing sha8 in col Q) and post duplicates.
+
+This is a class of failure: any time a REM has the file open when the poll fires, we can duplicate their notes on the ClickUp side. Fix it once so it self-heals.
+
+**What changed.**
+- New `WorkbookLockedError` exception, distinct from `FatalError`. Signals "transient lock, not a real failure" so `main()` doesn't page anyone or exit non-zero.
+- `upload_to_sharepoint` now detects HTTP 423, waits 30s, retries once, and if still 423 raises `WorkbookLockedError` (both the simple-PUT branch and the resumable-upload-session branch). Other statuses still raise `FatalError` unchanged.
+- `cu_post_comment` now RETURNS the created comment's id (was: returned nothing). Callers ignore it unless they need to roll back.
+- New `cu_delete_comment(comment_id)` helper. Best-effort; logs but never raises.
+- `sync_rem_comments_to_clickup` now tracks every successfully-posted comment id and returns them as a third tuple element `posted_comment_ids`. Callers updated: `run_comment_sync`, `run_build`.
+- New `rollback_locked_workbook(posted_comment_ids, context, error_detail)` helper. Called by `run_comment_sync` and `run_build` when `upload_to_sharepoint` raises `WorkbookLockedError`. Deletes each posted comment via `cu_delete_comment`, logs deleted/failed counts, and sends a friendly "postponed" notice to `ERROR_NOTIFICATION_TO` (distinct subject from a FATAL notice). The workbook is untouched — the SharePoint copy is exactly as it was before the run.
+- The rollback is bounded to comments POSTED THIS RUN. Comments from earlier successful runs are safe — they already have their Last Synced stamp round-tripped to SharePoint, so the sha8 dedup won't touch them.
+- New self-contained test at `snap_shot/tests/test_lock_rollback.py` covering (a) happy path, (b) rollback deletes every posted comment id, (c) `upload_to_sharepoint` raises `WorkbookLockedError` not `FatalError` on HTTP 423.
+
+**What did not change.**
+- No trigger, no field, no ClickUp custom-field id, no cron schedule, no workflow YAML.
+- Behavior when the workbook is NOT locked: identical to before this commit — posts happen, stamps land, upload succeeds, `posted_comment_ids` is discarded on the success path.
+- The race-condition guard (`is_race_condition`, `RACE_CONDITION_WINDOW_MINUTES`) is unchanged. It still short-circuits BEFORE any ClickUp post if a human touched the workbook in the last 15 min. The lock rollback only fires when the race guard PASSED (so we started posting) but SharePoint refused the upload anyway — typically because a fresh Excel session opened in the ~30 seconds after the race check.
+- No secret rotation. No new env vars.
+- `send_unposted_rem_email` (for "no matching ClickUp task") is unchanged and complementary — different failure mode.
+
+**Risk / rollback.**
+- Risk: **low**. Only fires on HTTP 423; every other code path is identical to pre-change. The rollback deletes ClickUp comments we know we just created (by id) — no wildcard deletions, no risk of removing older content. Wrong-side failure mode: if `cu_delete_comment` itself fails, the notice email lists the comment id so it can be manually cleaned up before the next successful run.
+- Rollback: `git revert <sha>`. There's no schema change, no secret change, no external dependency — pure code.
+
+**Verification.**
+- Local unit tests all pass:
+  - Scenario A (happy path): 3 posted, 0 deleted ✅
+  - Scenario B (locked → rollback): 5 posted → all 5 deleted, notice email rendered ✅
+  - Scenario C: `upload_to_sharepoint` sees repeated HTTP 423 → raises `WorkbookLockedError` (not `FatalError`) ✅
+- `python3 -m py_compile snap_shot/rebuild.py` clean.
+- Live verification: next time a REM has the workbook open when the poll fires, we should see "workbook locked — rolling back N comment(s)" in the run log, a "postponed" notice email in Alexis's inbox, and the run exits 0 (not red X). The next successful fire posts those same N comments once and stamps col Q.
+
 ## 2026-08-11 — Snap Shot: add afternoon sync-health sweep (5 PM weekdays) (L2)
 
 - **File(s):** `snap_shot/afternoon_sync_sweep.py` (new), `.github/workflows/snap-shot-afternoon-sync-sweep.yml` (new)
