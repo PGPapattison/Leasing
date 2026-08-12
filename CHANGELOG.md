@@ -2,6 +2,29 @@
 
 All notable changes to the Leasing automations repo. Newest at the top.
 
+## 2026-08-12 — Snap Shot: retire one-off stamp workflow (post-cleanup) (L2)
+
+- **File(s):** `.github/workflows/snap-shot-oneoff-stamp-locked-run.yml` (deleted), `snap_shot/one_off_stamp_locked_run.py` (deleted)
+- **Author:** Alexis Pattison
+- **Skill:** `prudent-snap-shot-rebuild` — no change.
+
+**Why.** The one-off surgical fix for the 2026-08-12 10:42 AM locked run has been applied successfully (GitHub Actions run 31632120793): 10 Q-column stamps recorded, workbook uploaded. Retiring the script + workflow so no one runs it again by accident. The permanent lock-safe path in `snap_shot/rebuild.py` handles this class of failure going forward.
+
+**What changed.**
+- Deleted `snap_shot/one_off_stamp_locked_run.py`.
+- Deleted `.github/workflows/snap-shot-oneoff-stamp-locked-run.yml`.
+
+**What did not change.**
+- All production behavior identical to the state after commit 4237c88.
+
+**Risk / rollback.**
+- Risk: none. Only removes a one-shot script that has already served its purpose.
+- Rollback: `git revert <this sha>`.
+
+**Verification.**
+- Apply run 31632120793 completed successfully: 10 stamp(s) recorded, workbook uploaded.
+- The next comment-sync run should show "98 unchanged skipped, 1 (or so) pending sync" — the pending count reflecting new REM edits since the apply, NOT the 10 residuals from the failed run.
+
 ## 2026-08-12 — Snap Shot: rollback ClickUp comments when SharePoint returns HTTP 423 (workbook locked in Excel) (L2)
 
 - **File(s):** `snap_shot/rebuild.py`, `snap_shot/tests/test_lock_rollback.py` (new)
