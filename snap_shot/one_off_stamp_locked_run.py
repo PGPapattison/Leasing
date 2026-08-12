@@ -107,6 +107,22 @@ def find_pending_units_with_target(
                 target_ids.append(t)
 
         if target_ids:
+            prior_stamp = last_synced_by_prop_unit.get((pid, unit_label), "")
+            # SAFETY: only stamp units that were POSTED-BUT-NOT-STAMPED by the
+            # 2026-08-12 10:42 AM ET locked run. Those units have a *prior*
+            # sha8 stamp from yesterday's nightly rebuild that just no longer
+            # matches col P (because a REM edited col P, we posted, but the
+            # new sha8 never landed). Units with an EMPTY prior stamp are
+            # brand-new comments added AFTER the locked run — those must be
+            # left to the regular comment-sync so they actually reach ClickUp.
+            if not prior_stamp:
+                LOG.info(
+                    f"  · SKIP {(str(pid), unit_label)} — empty prior stamp, "
+                    f"means this is a NEW pending comment added since the "
+                    f"locked run, not part of the 10 that need surgical fix. "
+                    f"The regular comment-sync will post it normally."
+                )
+                continue
             pending_with_target.append({
                 "pid": str(pid),
                 "unit_label": unit_label,
@@ -114,7 +130,7 @@ def find_pending_units_with_target(
                 "target_task_count": len(target_ids),
                 "comment": comment_text,
                 "new_hash": new_hash,
-                "prior_stamp": last_synced_by_prop_unit.get((pid, unit_label), ""),
+                "prior_stamp": prior_stamp,
             })
 
     return pending_with_target
