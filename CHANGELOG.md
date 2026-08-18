@@ -2,6 +2,40 @@
 
 All notable changes to the Leasing automations repo. Newest at the top.
 
+## 2026-08-18 — Snap Shot: catch-up 5 orphaned REM comments + fix hyphen-padding normalizer (L2)
+
+- **File(s):** `snap_shot/rebuild.py` (normalizer fix), `snap_shot/tests/test_norm_unit_label.py` (new, 8 tests), `snap_shot/one_off_wire_orphans_2026_08_18.py` (new one-off), `.github/workflows/snap-shot-oneoff-wire-orphans-2026-08-18.yml` (new workflow_dispatch)
+- **Author:** Alexis Pattison
+- **Skill:** `prudent-snap-shot-rebuild` — no user-visible workflow change; skill markdown does not need bumping (durable behavior is "REM comments still round-trip through col P/Q the same way"; the fix is purely internal to the matcher).
+
+**Why.** Six REM comments from the 2026-08-12 comment-sync run orphaned because no matching ClickUp task existed at post-time (the WARNING lines in the poll log). Alexis's assistant located 5 of the 6 tasks. Investigation on the 5:
+
+1. Cumberland Flex | Warehouse Cages (pid=230, tid=1405) → task `868kt2tzu` — task was created 2026-08-17, after the orphan warning. Fields already correct. Only needed the pending col-P comment posted + col Q stamped.
+2. Lakeview Village - 181 B-1 / WingStop (pid=54) → task `868gyguen` (Vacancy Pipeline) — task's Unit # is `181 - B1` with space-padded hyphens; AppFolio's `unit_display` returns `181-B1`. `_norm_unit_label` didn't collapse the hyphen padding, so the `(pid, unit_norm)` lookup missed and the comment orphaned. **Root cause = normalizer bug, not missing task.** Fix collapses `" -"` / `"- "` runs. Also affects any future hand-typed unit label with space-padded hyphens.
+3. Savannah Crossing - Connectivity Source, LLC - Unit B2 (pid=211) → task `868kcmfen` — task's Tenant ID field was set to 1479, but the correct tenant per Alexis is 1271. Confirmed 2026-08-18 to overwrite.
+4-5. Somerset Shoppes - Donald Bell / Beau Reinmiller (pid=282, tids=2032/2025) → tasks `868kdk09t` / `868kdjzey` — both have blank Property ID + Tenant ID. Need both set + comment posted.
+6. Clickety Clack Vape and Gifts (pid=57, unit=1396, tid=1348) — assistant could not locate a matching ClickUp task. Left untouched; next scheduled sync will retry once someone creates the task.
+
+**What changed.**
+- `snap_shot/rebuild.py`: `_norm_unit_label` now collapses whitespace-padded hyphens (` - ` / ` -` / `- `) to `-` before returning. Test suite at `snap_shot/tests/test_norm_unit_label.py` locks the behavior across 8 cases (bare number, prefix variants, whitespace padding, stacked hyphens, asymmetric padding, empty/whitespace, no-hyphen-space preserved).
+- New `snap_shot/one_off_wire_orphans_2026_08_18.py`: two-part fix per task — (a) write Property ID / Tenant ID via `cu_set_field` where blank or where explicitly forced (Connectivity Source only), (b) post the current col-P comment with the standard "📋 LSS note from {REM} ({date})" preamble via `cu_post_comment`, then stamp col Q with `YYYY-MM-DD HH:MM ET · sha8:<hash>` matching what the regular comment-sync writes. Uses the lock-safe upload path from commit 4237c88 — if SharePoint returns HTTP 423 we DELETE the just-posted comments so the next run posts cleanly. Dry-run by default; needs `--apply` to mutate.
+- New workflow `.github/workflows/snap-shot-oneoff-wire-orphans-2026-08-18.yml`: `workflow_dispatch` with `dry-run | apply` input, concurrency group `snap-shot` so it can't race the regular poll.
+
+**What did not change.**
+- No changes to the regular poll cadence, no cron changes, no ClickUp custom-field id changes, no new secrets.
+- The orphan #6 (Clickety Clack Vape and Gifts) is intentionally untouched — no matching ClickUp task exists yet.
+- The Wingstop task's Tenant ID stays blank — Vacancy Pipeline matches by (pid, unit), not tenant, and the unit is vacant.
+- The existing lock-safe HTTP 423 rollback path from commit 4237c88 is unchanged and re-used here.
+
+**Risk / rollback.**
+- Risk: **low**. The normalizer change is additive (only affects labels with whitespace-padded hyphens — previously those unmatched anything; now they match). 8 unit tests cover the boundary conditions including no-hyphen and space-preserved cases. The one-off is dry-run by default and idempotent — a repeat run after a successful apply sees `sha8(P)==sha8(Q)` on those 5 rows and skips them.
+- Rollback: `git revert <sha>` for the normalizer change; delete the one-off script + workflow. If a Tenant ID write went wrong on Connectivity Source, edit the field in ClickUp directly.
+
+**Verification.**
+- Local unit tests: `python -m unittest snap_shot.tests.test_norm_unit_label` — all 8 pass; `_norm_unit_label('181 - B1') == _norm_unit_label('181-B1') == '181-b1'`.
+- Deploy path: workflow_dispatch → dry-run → apply. Dry-run should log all 5 wire-up rows with the current col-P comment preview and Q-cell address. Apply should log 5 `cu_set_field` writes (some as no-op if the field's already correct), 5 `cu_post_comment` results with comment IDs, 5 col-Q stamps, and a successful SharePoint upload.
+- Post-apply: the next comment-sync run should log `98 unchanged skipped` (or similar) and 0 orphans from these 5 units.
+
 ## 2026-08-12 — Snap Shot: retire one-off stamp workflow (post-cleanup) (L2)
 
 - **File(s):** `.github/workflows/snap-shot-oneoff-stamp-locked-run.yml` (deleted), `snap_shot/one_off_stamp_locked_run.py` (deleted)

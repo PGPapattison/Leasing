@@ -402,6 +402,13 @@ def _norm_unit_label(s):
             changed = True
     # Collapse any internal whitespace to a single space.
     t = " ".join(t.split())
+    # Collapse whitespace around hyphens so ClickUp's '181 - B1' matches
+    # AppFolio's '181-B1'. Without this the (pid, unit_norm) lookup misses
+    # every hyphen-suffixed unit whose ClickUp entry was hand-typed with
+    # surrounding spaces (Lakeview Village Unit 181-B1 / WingStop was the
+    # 2026-08-18 discovery).
+    while " -" in t or "- " in t:
+        t = t.replace(" -", "-").replace("- ", "-")
     return t
 
 
