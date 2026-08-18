@@ -2,6 +2,26 @@
 
 All notable changes to the Leasing automations repo. Newest at the top.
 
+## 2026-08-18 — Snap Shot one-off: coerce Property/Tenant ID to string (L1 bugfix)
+
+- **File(s):** `snap_shot/one_off_wire_orphans_2026_08_18.py`
+- **Author:** Alexis Pattison
+
+**Why.** First apply run (32151613912) failed 4 field writes with ClickUp `FIELD_018 "Value is not a valid string"`. The Property ID (`057285dd-…`) and Tenant ID (`2f9249fb-…`) fields are ClickUp "short text" type — they reject numeric payloads. WIRE_UP hard-codes ints. On the same run, SharePoint returned HTTP 423 (workbook was open in Excel), so the lock-safe rollback deleted all 5 just-posted comments — clean state to retry.
+
+**What changed.**
+- Wrap both `cu_set_field` calls in `str(…)` so pid=282 / tid=1271 / 2032 / 2025 land as strings.
+
+**What did not change.**
+- Nothing else. The dry-run plan, the WIRE_UP contents, the workflow YAML, `rebuild.py`, the tests — all identical.
+
+**Risk / rollback.**
+- Risk: low. Same idempotent one-off; sha8(P)==sha8(Q) still causes skip on rerun.
+- Rollback: `git revert <sha>`.
+
+**Verification.**
+- Re-fire `snap-shot-oneoff-wire-orphans-2026-08-18.yml` with `mode=apply`. All 5 rows should show `✓ posted comment`, `✓ stamped Q<row>`, 3 rows should show `✓ Property ID` or `✓ Tenant ID` writes, and the SharePoint upload should succeed (requires workbook not open in Excel).
+
 ## 2026-08-18 — Snap Shot: catch-up 5 orphaned REM comments + fix hyphen-padding normalizer (L2)
 
 - **File(s):** `snap_shot/rebuild.py` (normalizer fix), `snap_shot/tests/test_norm_unit_label.py` (new, 8 tests), `snap_shot/one_off_wire_orphans_2026_08_18.py` (new one-off), `.github/workflows/snap-shot-oneoff-wire-orphans-2026-08-18.yml` (new workflow_dispatch)

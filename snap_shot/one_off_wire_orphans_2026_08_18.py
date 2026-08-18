@@ -338,7 +338,10 @@ def main():
                 if current_pid and str(current_pid) == str(row["set_pid"]):
                     LOG.info(f"  = task {task_id} Property ID already {current_pid} — skip.")
                 else:
-                    cu_set_field(task_id, CU_PROPERTY_ID_FIELD, row["set_pid"])
+                    # ClickUp Property ID / Tenant ID are short-text fields
+                    # (FIELD_018 = "Value is not a valid string" if we send
+                    # an int). Coerce to str.
+                    cu_set_field(task_id, CU_PROPERTY_ID_FIELD, str(row["set_pid"]))
                     LOG.info(f"  ✓ task {task_id} Property ID {current_pid or '(empty)'} → {row['set_pid']}")
             except Exception as e:  # noqa: BLE001
                 LOG.warning(f"  ! Property ID write failed on {task_id}: {e}")
@@ -356,7 +359,8 @@ def main():
                         f"(force_tid=False) — leaving as-is."
                     )
                 else:
-                    cu_set_field(task_id, CU_TENANT_ID_FIELD, row["set_tid"])
+                    # Short-text field — must be a string, not an int.
+                    cu_set_field(task_id, CU_TENANT_ID_FIELD, str(row["set_tid"]))
                     LOG.info(f"  ✓ task {task_id} Tenant ID {current_tid or '(empty)'} → {row['set_tid']}")
             except Exception as e:  # noqa: BLE001
                 LOG.warning(f"  ! Tenant ID write failed on {task_id}: {e}")
