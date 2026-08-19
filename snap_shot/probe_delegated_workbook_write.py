@@ -101,7 +101,8 @@ def probe_read_worksheets(token: str) -> None:
     print(f"    HTTP {r.status_code}")
     if r.status_code == 200:
         sheets = [w["name"] for w in r.json().get("value", [])]
-        _ok(f"Read succeeded. Sheets: {sheets[:6]}{'\u2026' if len(sheets) > 6 else ''}")
+        ellipsis = "\u2026" if len(sheets) > 6 else ""
+        _ok(f"Read succeeded. Sheets: {sheets[:6]}{ellipsis}")
     else:
         _fail(f"Read failed: {r.text[:400]}")
 
