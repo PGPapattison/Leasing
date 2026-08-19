@@ -1791,8 +1791,17 @@ def patch_cells_via_graph(updates, *, sheet_name="Snap Shot"):
     Returns dict {"patched": N, "failed": [(addr, error), …]}.
 
     Coexists with the workbook being open in Excel: PATCHes go through
-    the same collaborative editing session Excel uses, so the file is not
+    the same collaborative editing pipeline Excel uses, so the file is not
     exclusively locked at any point.
+
+    Sessionless: Graph's workbook/createSession endpoint requires delegated
+    permissions and returns HTTP 403 ("Could not obtain a WAC access token")
+    under our app-only auth. Per Microsoft's Excel API docs
+    (https://learn.microsoft.com/en-us/graph/api/resources/excel):
+      "The session header is not required for an Excel API to work…
+       If you don't use a session header, changes made during the API call
+       ARE persisted to the file."
+    So we PATCH each cell directly. Persistence is guaranteed by Graph.
     """
     # Normalize to (sheet, addr, value) triples.
     normalized = []
@@ -1809,9 +1818,8 @@ def patch_cells_via_graph(updates, *, sheet_name="Snap Shot"):
         return {"patched": 0, "failed": []}
 
     token = get_graph_access_token()
-    session_id = _create_workbook_session(token)
     LOG.info(
-        f"Opened Graph Workbook session (id={session_id[:12]}\u2026) for "
+        f"Graph cell-PATCH (sessionless, app-only auth): "
         f"{len(normalized)} cell patch(es)."
     )
 
@@ -1840,7 +1848,6 @@ def patch_cells_via_graph(updates, *, sheet_name="Snap Shot"):
                     headers={
                         "Authorization": f"Bearer {token}",
                         "Content-Type": "application/json",
-                        "workbook-session-id": session_id,
                     },
                     json=body,
                     timeout=WORKBOOK_SESSION_TIMEOUT_SEC,
@@ -1857,7 +1864,7 @@ def patch_cells_via_graph(updates, *, sheet_name="Snap Shot"):
                 failed.append((f"{sheet}!{addr}", str(e)))
                 LOG.warning(f"  ! patch {sheet}!{addr} raised: {e}")
     finally:
-        _close_workbook_session(token, session_id)
+        pass  # sessionless — nothing to close
 
     LOG.info(
         f"Graph cell-PATCH batch complete: {patched} patched, {len(failed)} failed."
