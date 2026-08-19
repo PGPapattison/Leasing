@@ -2,30 +2,6 @@
 
 All notable changes to the Leasing automations repo. Newest at the top.
 
-## 2026-08-19 — Snap Shot cell-PATCH: pivot to sessionless PATCH + `--skip-comment-posts` (L2)
-
-- **File(s):** `snap_shot/rebuild.py` (drop createSession requirement), `snap_shot/one_off_wire_orphans_2026_08_18.py` (new `--skip-comment-posts` flag), `.github/workflows/snap-shot-oneoff-wire-orphans-2026-08-18.yml` (new `apply-stamps-only` mode)
-- **Author:** Alexis Pattison
-
-**Why.** First live test of `patch_cells_via_graph` failed on `POST /workbook/createSession` with HTTP 403 `AccessDenied: Could not obtain a WAC access token`. Per Microsoft Graph docs, `workbook/createSession` is **not supported with application permissions** — only delegated (work/school) with `Files.ReadWrite`. Our automation runs client-credentials app-only auth against Jerry's app registration, so createSession will never succeed on this auth path. The Excel Working with Excel docs also say: "The session header is not required for an Excel API to work… if you don't use a session header, changes made during the API call *are* persisted to the file", so sessionless PATCH is the app-auth-compatible route. Separately, the 5 REM comments already posted successfully on the same failed run, so re-firing `apply` would duplicate them — the one-off needs a mode that only stamps col Q.
-
-**What changed.**
-- `rebuild.py`: `patch_cells_via_graph` now PATCHes ranges directly, no `workbook-session-id` header, no createSession/closeSession calls. `_create_workbook_session` / `_close_workbook_session` helpers remain in place (dead code for now) in case a future delegated-auth path wants them.
-- `one_off_wire_orphans_2026_08_18.py`: new `--skip-comment-posts` flag that still writes Property/Tenant IDs and still stamps col Q, but skips `cu_post_comment`. Use it when comments already landed on a prior partial-success run.
-- Workflow YAML: new `apply-stamps-only` choice on the `mode` input that passes `--apply --skip-comment-posts` to the script.
-
-**What did not change.**
-- `upload_to_sharepoint` unchanged; nightly full rebuild unchanged.
-- ClickUp custom-field IDs, comment attribution format, sha8 dedup, Q-stamp format, race guard — all identical.
-- No new secrets. Confirmed `Files.ReadWrite.All` app-only permission is sufficient for range PATCH.
-
-**Risk / rollback.**
-- Risk: **low**. Sessionless PATCH is a Graph-documented and Graph-supported code path; removing session overhead reduces failure surface.
-- Rollback: `git revert <sha>`. If sessionless PATCH turns out to not persist under some tenant configuration, next scheduled comment-sync run (still on the old upload path) will re-stamp any rows we missed.
-
-**Verification.**
-- Fire `snap-shot-oneoff-wire-orphans-2026-08-18.yml` with `mode=apply-stamps-only`. Expect: 0 field writes (already permanent), 0 comment posts (skip-comment-posts), 5 successful Q-cell PATCHes, workbook stays open in Excel. Confirm by opening the Snap Shot in Excel afterwards and reading Q274 / Q875 / Q1439 / Q1654 / Q1661 — each should show `2026-08-19 HH:MM ET · sha8:<hash>`.
-
 ## 2026-08-19 — Snap Shot: durable Graph cell-PATCH path for Q-column stamps (L3)
 
 - **File(s):** `snap_shot/rebuild.py` (new helpers), `snap_shot/one_off_wire_orphans_2026_08_18.py` (switched to cell-PATCH)

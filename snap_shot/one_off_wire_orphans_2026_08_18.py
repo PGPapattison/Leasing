@@ -227,15 +227,6 @@ def main():
         "--apply", action="store_true",
         help="Actually mutate ClickUp + SharePoint. Default is dry-run.",
     )
-    parser.add_argument(
-        "--skip-comment-posts", action="store_true",
-        help=(
-            "Skip posting REM comments to ClickUp (still writes fields + stamps "
-            "col Q). Use when the comments already landed on a prior run and "
-            "you only need to backfill col-Q stamps to prevent duplicates on "
-            "the next scheduled comment-sync."
-        ),
-    )
     args = parser.parse_args()
 
     LOG.info(
@@ -374,13 +365,6 @@ def main():
         # 5c. Post the REM comment (if col P has text).
         if not row["comment"]:
             LOG.info(f"  · task {task_id}: col P blank, nothing to post.")
-            continue
-
-        if args.skip_comment_posts:
-            LOG.info(
-                f"  · task {task_id}: --skip-comment-posts set, "
-                f"skipping post (still stamping Q)."
-            )
             continue
 
         today = now_et().strftime("%Y-%m-%d")

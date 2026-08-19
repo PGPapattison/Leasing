@@ -22,7 +22,7 @@ on:
         required: true
         default: 'dry-run'
         type: choice
-        options: ['dry-run', 'apply', 'apply-stamps-only']
+        options: ['dry-run', 'apply']
 
 concurrency:
   group: snap-shot
@@ -52,14 +52,8 @@ jobs:
           CLICKUP_API_TOKEN: ${{ secrets.CLICKUP_API_TOKEN }}
           SHAREPOINT_FOLDER_PATH: "General/_Prudent Growth Operations, LLC/LEASING & ASSET MANAGEMENT/WORKING DOCS"
         run: |
-          case "${{ github.event.inputs.mode }}" in
-            apply)
-              python snap_shot/one_off_wire_orphans_2026_08_18.py --apply
-              ;;
-            apply-stamps-only)
-              python snap_shot/one_off_wire_orphans_2026_08_18.py --apply --skip-comment-posts
-              ;;
-            *)
-              python snap_shot/one_off_wire_orphans_2026_08_18.py
-              ;;
-          esac
+          if [ "${{ github.event.inputs.mode }}" = "apply" ]; then
+            python snap_shot/one_off_wire_orphans_2026_08_18.py --apply
+          else
+            python snap_shot/one_off_wire_orphans_2026_08_18.py
+          fi
