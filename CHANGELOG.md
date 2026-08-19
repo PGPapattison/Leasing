@@ -2,6 +2,48 @@
 
 All notable changes to the Leasing automations repo. Newest at the top.
 
+## 2026-08-19 — Snap Shot: move REM-comment dedup state off col Q and onto a ClickUp custom field (L3)
+
+- **Commit:** _(this commit)_
+- **File(s):** `snap_shot/rebuild.py`, `snap_shot/tests/test_lock_rollback.py`, `snap_shot/backfill_last_synced_hash.py` (already committed `8dc048f`), `.github/workflows/snap-shot-backfill-last-synced-hash.yml` (already committed `8dc048f`); probe files deleted: `snap_shot/probe_delegated_workbook_write.py` + `.github/workflows/snap-shot-probe-workbook-write.yml`
+- **Author:** Alexis Pattison
+- **Skill:** `prudent-snap-shot-rebuild` v1.0 → v2.0 (pending in follow-up)
+
+**Why.** Since 2026-08-17 the comment-sync path has been trying to stamp col Q of the workbook after posting REM comments to ClickUp. Every practical way to do that under our app-only Microsoft Graph auth has failed:
+- `PUT /driveItem/content` (whole-workbook upload) fails with HTTP 423 whenever the workbook is open in Excel (frequent — REMs edit live).
+- `POST /workbook/createSession` and range `PATCH` on `/workbook/*` both fail with HTTP 403 WAC token errors under app-only auth. These endpoints require delegated auth, which we don't have.
+
+Net effect: comment-sync could never durably reconcile state — either the workbook was locked, or the endpoint was forbidden — and any partial run risked posting a duplicate REM comment on the next attempt (production incident on run 32280301612 required manually deleting 5 duplicates). The dedup state has to live somewhere the workbook lock can't reach, which means it has to live on ClickUp.
+
+**What changed.**
+- New ClickUp short-text custom field `Last Synced Hash` (field id `eddb4ff7-5a48-4919-a5bc-1663045c663b`) on all three LAR lists (Renewal `901113575567`, Vacancy `901113575628`, Documents Workflow `901113991446`). Created 2026-08-19; backfilled 120/120 tasks in run 32290365861 from the current Snap Shot workbook's col Q values.
+- `pull_lar_summaries()` now also returns `last_synced_hash_by_task_id: {task_id: sha8_hex_or_empty}`, pulled from that custom field on the same request that already fetches the LAR task list. No extra API round-trips.
+- `sync_rem_comments_to_clickup()` no longer reads its diff-detect signal from workbook col Q via `_last_synced_hash()`. It reads from `last_synced_hash_by_task_id` per-target-task, so if a unit maps to 2 LAR tasks and only one has the current sha8 stamped, only the un-stamped one gets the comment (previously the workbook Q cell dedup'd both together). After each successful `cu_post_comment` the function now calls `cu_set_field` to stamp the new hash on that task.
+- The function still returns `last_synced_by_prop_unit` for backward compat with `build_workbook`, but values are now plain `"YYYY-MM-DD HH:MM ET"` timestamps (no more `· sha8:xxxxxxxx` suffix). Return signature grew to include `stamped_task_ids` — the list of tasks stamped this run, needed by the rollback path.
+- `rollback_locked_workbook` (SharePoint 423 recovery) grew a `stamped_task_ids` parameter. When the SharePoint upload fails after `sync_rem_comments_to_clickup` already stamped, the rollback now BOTH deletes the ClickUp comments AND clears (`cu_set_field(..., "")`) the `Last Synced Hash` on each stamped task, so the next successful run re-posts once instead of skipping.
+- `run_comment_sync` (poll mode) no longer downloads the workbook to READ col Q, no longer patches col Q, no longer re-uploads to SharePoint. It only fetches col P via extract_ann_edits for the race-guard + comment text, pulls the LAR summaries with fresh hash stamps, and calls sync. Returns `"synced"` on success (was a file path).
+- `run_build` (nightly rebuild) still passes col Q display values into `build_workbook`, but drops the col Q read from `extract_ann_edits` (assigned to `_last_synced_by_prop_unit_unused` and ignored). Col Q is now a display-only visible timestamp, not a state store.
+- Deleted `map_last_synced_addresses` (dead — was only used by the removed cell-PATCH path). Deleted `_last_synced_hash()` + `_LAST_SYNCED_HASH_RE` regex (dead — no more sha8-in-cell parsing anywhere). Deleted probe files `snap_shot/probe_delegated_workbook_write.py` + `.github/workflows/snap-shot-probe-workbook-write.yml`.
+- `snap_shot/tests/test_lock_rollback.py` adds Scenario B2: verify `rollback_locked_workbook` with `stamped_task_ids` clears each task's Last Synced Hash back to `""`. Existing scenarios A/B/C still pass. `cu_set_field` is now monkey-patched in all rollback-invoking tests.
+
+**What did not change.**
+- The workbook display: col Q still exists, still shows a human-readable timestamp for the REM. Header text and column width unchanged. Existing REM filters/views referencing col Q continue to work.
+- Nightly rebuild logic: still runs at the same cadence, still uploads the workbook to SharePoint the same way, still calls the same rollback on HTTP 423 (with the added stamp-clear step).
+- Afternoon sync-sweep workflow, weekly Broker Beat refresh, LAR summary pulling, TICAM pulling, Ann-edit preservation, race guard, REM-comment safety guard, comment attribution format (`📋 LSS note from {REM name} ({date}):`) — all unchanged.
+- ClickUp custom-field IDs (Tenant ID, Property ID, Unit #, all other summary fields) — unchanged.
+- AppFolio API auth, SharePoint auth, Microsoft Graph secrets, GitHub secrets — unchanged.
+- Poll workflow cron cadence, sync-sweep cadence — unchanged.
+
+**Risk / rollback.**
+- Risk: **medium.** State migration; the workbook col Q values will diverge from the ClickUp Last Synced Hash values over time (workbook shows plain timestamps; ClickUp holds the sha8). If the ClickUp field is deleted or renamed, comment-sync would treat every comment as brand-new on the next run — that would resurface the 2026-08-17 duplicate-comment failure mode. Mitigation: field is scoped to LAR lists Ann/REMs don't administer, ClickUp doesn't garbage-collect custom fields, and diff-detect degrades gracefully (`""` → comment re-posted) rather than fatally.
+- Rollback: `git revert <this-sha>`. Optional cleanup: delete the `Last Synced Hash` custom field from the 3 LAR lists (ClickUp UI). The 120 stamped values do no harm on their own if we revert.
+
+**Verification.**
+1. `python3 snap_shot/tests/test_lock_rollback.py` → `ALL SCENARIOS PASSED` (locally verified 2026-08-19 at ~19:13 UTC).
+2. First supervised nightly rebuild run → log line `REM comment sync: N unit(s) synced (M ClickUp comment(s) posted, K sha8 stamps written, 0 stamp failures)`.
+3. First poll (`--mode=comment-sync`) run after nightly → `comment-sync: 0 REM comment(s) may be pending sync — skipping AppFolio pull` (because the fresh nightly stamps match all extracted comments).
+4. Manually edit one REM comment in col P via the Snap Shot workbook. Wait 15 minutes for the next poll. Verify: (a) the comment posts to the matching LAR task, (b) the Last Synced Hash field on that task shows the new sha8, (c) col Q still shows the prior nightly timestamp (not touched by comment-sync mode), (d) the poll after that skips.
+
 ## 2026-08-19 — Snap Shot cell-PATCH: rolled back (Graph workbook/* endpoints not supported under app-only auth) (L5)
 
 - **Commits:** `c2cac5d` (revert of `56515f9`) + `7fa90ac` (revert of `5eaebfa`)
