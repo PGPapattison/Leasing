@@ -2,6 +2,38 @@
 
 All notable changes to the Leasing automations repo. Newest at the top.
 
+## 2026-08-19 — Snap Shot cell-PATCH: rolled back (Graph workbook/* endpoints not supported under app-only auth) (L5)
+
+- **Commits:** `c2cac5d` (revert of `56515f9`) + `7fa90ac` (revert of `5eaebfa`)
+- **File(s):** `snap_shot/rebuild.py`, `snap_shot/one_off_wire_orphans_2026_08_18.py`, `.github/workflows/snap-shot-oneoff-wire-orphans-2026-08-18.yml`
+- **Author:** Alexis Pattison
+
+**Why.** Two commits earlier today (`5eaebfa` durable session-based cell-PATCH, then `56515f9` sessionless pivot) claimed to introduce a live-write path for col Q that would work while the Snap Shot workbook stayed open in Excel. Both were rolled back today because they never worked in production:
+- `POST /workbook/createSession` returned HTTP 403 `AccessDenied: Could not obtain a WAC access token`. Per Microsoft Graph docs, `workbook/createSession` is **not supported with application permissions** — only delegated (work/school) with `Files.ReadWrite`. Our automation runs client-credentials app-only auth.
+- The sessionless fallback (range `PATCH` with no session header) failed the same way — HTTP 403 WAC on all 5 test cells. In practice the entire `/workbook/*` endpoint family on SharePoint `/sites/*` paths requires WAC, which app-only auth cannot obtain. The docs' "session header not required" language does not extend to this scenario.
+- Net production side-effect: run 32280301612 posted 5 REM comments to ClickUp before failing at createSession — 5 duplicates that had to be manually deleted.
+
+**What changed.**
+- Reverted `56515f9` and `5eaebfa` in full. `patch_cells_via_graph`, `_create_workbook_session`, `_close_workbook_session`, the `--skip-comment-posts` flag, and the `apply-stamps-only` workflow mode are all removed from `main`.
+- The one-off wire-orphans script + workflow are back to their pre-cell-PATCH shape: mode `dry-run` or `apply`; on `apply`, writes fields + posts comments + calls `upload_to_sharepoint` to stamp col Q (workbook-locked path with existing rollback semantics).
+- 5 duplicate ClickUp comments created by run 32280301612 (`90110262260993`, `90110262260994`, `90110262260999`, `90110262261005`, `90110262261009`) were deleted directly from ClickUp. The original 2026-08-17/18 posts remain in place.
+
+**What did not change.**
+- Nightly rebuild, poll workflow, afternoon sync-sweep, `upload_to_sharepoint`, `sync_rem_comments_to_clickup`, race guard, sha8 dedup, Ann/edit preservation — all unchanged.
+- ClickUp custom-field IDs, comment attribution format, Q-stamp format — all unchanged.
+- No secrets changed.
+
+**Risk / rollback.**
+- Risk: **very low.** Restoring a state that was in production for weeks. Only visible behavior change: workbook writes to col Q are once again gated on the workbook not being open in Excel (existing race guard).
+- Rollback: `git revert c2cac5d 7fa90ac`. Do not do this until we've migrated to delegated auth — see follow-up.
+
+**Verification.**
+- The 5 originally-posted LSS comments still exist on Warehouse Cages (`868kt2tzu`), Wingstop (`868gyguen`), Connectivity Source (`868kcmfen`), Donald Bell (`868kdk09t`), Beau Reinmiller (`868kdjzey`). Verified via `clickup_get_task_comments`: each task now shows exactly one LSS note dated 2026-08-17 or 2026-08-18, no duplicate 2026-08-19 entries.
+- Poll workflow at 17:01 UTC saw col P/col Q hashes matching for these 5 rows and skipped them as unchanged — confirms col Q was stamped by a prior successful `upload_to_sharepoint` run and no further duplicates will come from the scheduled poll.
+- `git log --oneline` shows `7fa90ac` at HEAD, then `c2cac5d`, then the two reverted commits.
+
+**Follow-up.** L3 (to be filed separately): migrate Snap Shot Graph workbook writes to a delegated OAuth flow so `workbook/createSession` becomes available and live cell-write is possible while the team stays in the workbook. Until that lands, col Q is stamped only via `upload_to_sharepoint` (workbook must not be locked open).
+
 ## 2026-08-18 — Snap Shot one-off: coerce Property/Tenant ID to string (L1 bugfix)
 
 - **File(s):** `snap_shot/one_off_wire_orphans_2026_08_18.py`
