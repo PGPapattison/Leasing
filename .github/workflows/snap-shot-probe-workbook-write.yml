@@ -1,0 +1,35 @@
+name: Snap Shot — probe workbook write auth (diagnostic)
+
+# Fires only on-demand. Runs a read-only-ish diagnostic that confirms whether
+# the existing delegated refresh token can hit the Graph workbook/* endpoints
+# on the live Snap Shot workbook. Writes only to safe probe cells (ZZ1, ZZ2)
+# outside the data region.
+
+on:
+  workflow_dispatch:
+
+concurrency:
+  group: snap-shot
+  cancel-in-progress: false
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: pip install requests
+
+      - name: Probe delegated workbook write
+        env:
+          APATTISON_MS_REFRESH_TOKEN: ${{ secrets.APATTISON_MS_REFRESH_TOKEN }}
+        run: python snap_shot/probe_delegated_workbook_write.py
