@@ -45,14 +45,11 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from rebuild import (  # noqa: E402
     CU_PROPERTY_ID_FIELD,
     CU_TENANT_ID_FIELD,
-    LOCAL_BUILD_DIR,
     LOG,
     MAPPING_PATH,
     WORKBOOK_WEB_URL,
-    WorkbookLockedError,
     _comment_hash,
     _rem_name_for_property,
-    cu_delete_comment,
     cu_post_comment,
     cu_set_field,
     download_from_sharepoint,
@@ -61,7 +58,7 @@ from rebuild import (  # noqa: E402
     load_json,
     map_last_synced_addresses,
     now_et,
-    upload_to_sharepoint,
+    patch_cells_via_graph,
 )
 
 
@@ -382,49 +379,32 @@ def main():
         except Exception as e:  # noqa: BLE001
             LOG.warning(f"  ! post to {task_id} raised: {e}")
 
-    # Step 6: patch col Q for each row we posted (or would post — comment_text
-    # blank rows don't need a stamp).
-    wb = openpyxl.load_workbook(io.BytesIO(wb_bytes))
-    ws = wb["Snap Shot"]
+    # Step 6: patch col Q via Graph Workbook API (works while the workbook
+    # is open in Excel — no HTTP 423 lock issues).
     now_str = now_et().strftime("%Y-%m-%d %H:%M ET")
-
-    stamped = 0
+    q_updates = []
     for row in plan:
         if not row["comment"]:
             continue  # nothing was posted → nothing to stamp
         stamp = f"{now_str} · sha8:{_comment_hash(row['comment'])}"
-        addr = row["q_addr"]
-        ws[addr].value = stamp
-        LOG.info(f"  ✓ stamped {addr} = {stamp!r}")
-        stamped += 1
+        q_updates.append((row["q_addr"], stamp))
 
-    if stamped == 0:
-        LOG.info("No col-Q stamps needed. Skipping upload.")
+    if not q_updates:
+        LOG.info("No col-Q stamps needed.")
         return 0
 
-    output_path = os.path.join(LOCAL_BUILD_DIR, "Leasing-Snap-Shot.xlsx")
-    os.makedirs(LOCAL_BUILD_DIR, exist_ok=True)
-    wb.save(output_path)
-    LOG.info(f"Saved patched workbook to {output_path}.")
-
-    # Step 7: upload with the lock-safe rollback path.
-    try:
-        upload_to_sharepoint(output_path)
-    except WorkbookLockedError as e:
+    result = patch_cells_via_graph(q_updates)
+    if result["failed"]:
         LOG.warning(
-            f"Upload rejected as HTTP 423 (workbook currently open in Excel): {e}"
+            f"{len(result['failed'])} Q-cell PATCH(es) failed: {result['failed']}. "
+            f"The next scheduled comment-sync run will re-attempt any unstamped rows."
         )
-        LOG.warning(
-            f"Rolling back {len(posted_comment_ids)} ClickUp comment(s) so the next "
-            f"successful run can post cleanly."
-        )
-        for cid in posted_comment_ids:
-            cu_delete_comment(cid)
-        return 2
 
-    LOG.info(f"Uploaded patched workbook — {stamped} stamp(s) recorded.")
     LOG.info(f"Workbook: {WORKBOOK_WEB_URL}")
-    LOG.info(f"Posted {len(posted_comment_ids)} ClickUp comment(s).")
+    LOG.info(
+        f"Posted {len(posted_comment_ids)} ClickUp comment(s); "
+        f"stamped {result['patched']}/{len(q_updates)} Q-cell(s)."
+    )
     return 0
 
 

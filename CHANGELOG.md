@@ -2,6 +2,31 @@
 
 All notable changes to the Leasing automations repo. Newest at the top.
 
+## 2026-08-19 — Snap Shot: durable Graph cell-PATCH path for Q-column stamps (L3)
+
+- **File(s):** `snap_shot/rebuild.py` (new helpers), `snap_shot/one_off_wire_orphans_2026_08_18.py` (switched to cell-PATCH)
+- **Author:** Alexis Pattison
+
+**Why.** The download-edit-upload path holds a Graph exclusive-write lock, so every attempt to save changes back to `Leasing-Snap-Shot.xlsx` fails with HTTP 423 while anyone has the workbook open in Excel. Peggy and the leasing team are in the workbook all day — that means every scheduled `comment-sync` run and the pending one-off catch-up either wait for a lock-free moment (rare) or roll back on 423. This is the second time this month it has bitten us (2026-08-07 wipe RCA, 2026-08-18 apply-run rollback), and it will keep biting us until the write path is replaced.
+
+**What changed.**
+- `rebuild.py`: new `patch_cells_via_graph(updates)` helper. Opens a persistent Graph Workbook session (`POST /workbook/createSession {"persistChanges": true}`), PATCHes each cell via `/workbook/worksheets/{name}/range(address='<addr>')` with the `workbook-session-id` header, then best-effort `closeSession`. Cell PATCHes go through the same collaborative editing pipeline Excel uses, so the file is never exclusively locked — the workbook can stay open in Excel throughout. Also adds `_create_workbook_session` / `_close_workbook_session` helpers.
+- `one_off_wire_orphans_2026_08_18.py`: replaces the download-edit-openpyxl-save-upload dance for Q-stamps with a single `patch_cells_via_graph(q_updates)` call. The full-file `upload_to_sharepoint` path stays as-is for the nightly full rebuild (which really does need to overwrite the whole workbook).
+
+**What did not change.**
+- `upload_to_sharepoint` is unchanged — the nightly full-rebuild still uses full-file upload (correct behavior; it replaces hundreds of cells across dozens of sheets).
+- `sync_rem_comments_to_clickup` behavior is unchanged in this commit — it still uses `upload_to_sharepoint`. That switchover will be a follow-up L3 once the one-off's cell-PATCH path is verified live. Filing as tech debt.
+- Ann's edits, Q-stamp format, comment attribution format, sha8 dedup — all identical.
+- No new secrets, no new scopes (`Files.ReadWrite.All` already covers the workbook endpoint).
+
+**Risk / rollback.**
+- Risk: **medium**. Graph Workbook API is a well-documented endpoint but new to this codebase. First live test is the one-off script against a workbook currently open in Excel by Peggy.
+- Rollback: `git revert <sha>` restores the previous upload-based one-off. If the cell-PATCH corrupts a cell (extremely unlikely — the API is a targeted string write), edit the cell in Excel directly. No batch rollback path is needed because each PATCH is atomic and idempotent.
+
+**Verification.**
+- Deploy: re-fire `snap-shot-oneoff-wire-orphans-2026-08-18.yml` with `mode=apply`. Expect: 0 new field writes (already landed on 2026-08-18), 5 comment posts, 5 successful Q-cell PATCHes, workbook stays open in Excel with no interruption.
+- If any cell PATCH fails, the next scheduled `comment-sync` run re-attempts the unstamped rows (still using the old upload path until the follow-up L3 lands).
+
 ## 2026-08-18 — Snap Shot one-off: coerce Property/Tenant ID to string (L1 bugfix)
 
 - **File(s):** `snap_shot/one_off_wire_orphans_2026_08_18.py`

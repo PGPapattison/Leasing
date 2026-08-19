@@ -1703,6 +1703,168 @@ def upload_to_sharepoint(local_path):
     return final_response.json() if final_response is not None else {}
 
 
+# ─── SharePoint cell-PATCH (Graph Workbook API) ──────────────────────────
+#
+# The download-edit-upload path holds an exclusive lock and therefore fails
+# with HTTP 423 whenever anyone has the workbook open in Excel. The Graph
+# Workbook API's range/update endpoint patches individual cells through the
+# same collaborative editing session Excel uses, so it coexists with an open
+# workbook. We use this for small targeted writes (Q-column Last Synced
+# stamps in the comment-sync path); full workbook rebuilds still go through
+# upload_to_sharepoint because they replace hundreds of cells across dozens
+# of sheets.
+#
+# Contract: patch_cells_via_graph(updates) where updates is a list of
+# (sheet_name, cell_address, value) tuples. Values are coerced to strings
+# for the JSON body (openpyxl's stamp format is always a string). Returns
+# the number of cells successfully patched. Raises FatalError if the
+# session can't be created; individual cell PATCH failures are logged but
+# do not abort the whole batch (partial-success is safe because each cell
+# is idempotent — next run re-patches any that didn't land).
+
+WORKBOOK_SESSION_TIMEOUT_SEC = 20
+
+
+def _create_workbook_session(token):
+    """Open a persistent Graph Workbook session on the Snap Shot workbook.
+
+    Returns the session id (opaque string). Persistent sessions save
+    changes back to the source file, so subsequent PATCHes are durable
+    even if the caller doesn't explicitly close the session.
+    """
+    url = (
+        f"https://graph.microsoft.com/v1.0/sites/{SITE_ID}/drives/{DRIVE_ID}"
+        f"/root:/{SHAREPOINT_ITEM_PATH}:/workbook/createSession"
+    )
+    r = http_request(
+        "POST", url,
+        context="Graph Workbook createSession",
+        headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
+        json={"persistChanges": True},
+        timeout=WORKBOOK_SESSION_TIMEOUT_SEC,
+    )
+    if r.status_code not in (200, 201):
+        raise FatalError(
+            f"Graph Workbook createSession failed: HTTP {r.status_code}: {r.text[:300]}"
+        )
+    body = r.json()
+    session_id = body.get("id")
+    if not session_id:
+        raise FatalError(f"Graph Workbook createSession returned no session id: {body}")
+    return session_id
+
+
+def _close_workbook_session(token, session_id):
+    """Best-effort close of a persistent Workbook session. Silent on failure
+    — the session times out on its own after ~5 minutes of inactivity, so
+    a failed close is not fatal.
+    """
+    if not session_id:
+        return
+    url = (
+        f"https://graph.microsoft.com/v1.0/sites/{SITE_ID}/drives/{DRIVE_ID}"
+        f"/root:/{SHAREPOINT_ITEM_PATH}:/workbook/closeSession"
+    )
+    try:
+        http_request(
+            "POST", url,
+            context="Graph Workbook closeSession",
+            headers={
+                "Authorization": f"Bearer {token}",
+                "Content-Type": "application/json",
+                "workbook-session-id": session_id,
+            },
+            retries=0,
+            timeout=WORKBOOK_SESSION_TIMEOUT_SEC,
+        )
+    except Exception as e:  # noqa: BLE001
+        LOG.info(f"closeSession failed (non-fatal, session auto-expires): {e}")
+
+
+def patch_cells_via_graph(updates, *, sheet_name="Snap Shot"):
+    """Patch N cells in the Snap Shot workbook via Graph Workbook API.
+
+    updates: iterable of either (address, value) tuples — sheet defaults
+    to `sheet_name` — or (sheet, address, value) triples for cross-sheet
+    patches. Values are stringified before being sent.
+
+    Returns dict {"patched": N, "failed": [(addr, error), …]}.
+
+    Coexists with the workbook being open in Excel: PATCHes go through
+    the same collaborative editing session Excel uses, so the file is not
+    exclusively locked at any point.
+    """
+    # Normalize to (sheet, addr, value) triples.
+    normalized = []
+    for row in updates:
+        if len(row) == 2:
+            addr, val = row
+            normalized.append((sheet_name, addr, val))
+        elif len(row) == 3:
+            normalized.append((row[0], row[1], row[2]))
+        else:
+            raise ValueError(f"patch_cells_via_graph: unexpected update shape {row!r}")
+
+    if not normalized:
+        return {"patched": 0, "failed": []}
+
+    token = get_graph_access_token()
+    session_id = _create_workbook_session(token)
+    LOG.info(
+        f"Opened Graph Workbook session (id={session_id[:12]}\u2026) for "
+        f"{len(normalized)} cell patch(es)."
+    )
+
+    patched = 0
+    failed = []
+    try:
+        base = (
+            f"https://graph.microsoft.com/v1.0/sites/{SITE_ID}/drives/{DRIVE_ID}"
+            f"/root:/{SHAREPOINT_ITEM_PATH}:/workbook/worksheets"
+        )
+        for sheet, addr, val in normalized:
+            # Excel's range endpoint uses parentheses + address parameter:
+            # /worksheets/{sheet}/range(address='Q1439')
+            # The value must be wrapped in [[...]] because Excel treats
+            # every range as a 2-D block.
+            sheet_quoted = urllib.parse.quote(sheet, safe="")
+            addr_quoted = urllib.parse.quote(addr, safe="")
+            url = (
+                f"{base}/{sheet_quoted}/range(address='{addr_quoted}')"
+            )
+            body = {"values": [["" if val is None else str(val)]]}
+            try:
+                r = http_request(
+                    "PATCH", url,
+                    context=f"Graph range PATCH {sheet}!{addr}",
+                    headers={
+                        "Authorization": f"Bearer {token}",
+                        "Content-Type": "application/json",
+                        "workbook-session-id": session_id,
+                    },
+                    json=body,
+                    timeout=WORKBOOK_SESSION_TIMEOUT_SEC,
+                    retries=1,
+                )
+                if r.status_code == 200:
+                    patched += 1
+                    LOG.info(f"  \u2713 patched {sheet}!{addr} = {val!r}")
+                else:
+                    err = f"HTTP {r.status_code}: {r.text[:200]}"
+                    failed.append((f"{sheet}!{addr}", err))
+                    LOG.warning(f"  ! patch {sheet}!{addr} failed: {err}")
+            except Exception as e:  # noqa: BLE001
+                failed.append((f"{sheet}!{addr}", str(e)))
+                LOG.warning(f"  ! patch {sheet}!{addr} raised: {e}")
+    finally:
+        _close_workbook_session(token, session_id)
+
+    LOG.info(
+        f"Graph cell-PATCH batch complete: {patched} patched, {len(failed)} failed."
+    )
+    return {"patched": patched, "failed": failed}
+
+
 # ─── SharePoint archive (RCA_2026-08-07 fix #4) ──────────────────────────────
 #
 # Every successful rebuild archives the current live Snap Shot to
