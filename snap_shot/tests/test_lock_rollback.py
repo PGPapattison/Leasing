@@ -1,11 +1,12 @@
 """Unit tests for the SharePoint-locked rollback path.
 
-Four scenarios covered:
+Three scenarios covered (as of 2026-08-25 — the col P retirement removed
+the ClickUp comment-sync side effects, so rollback_locked_workbook no
+longer takes posted_comment_ids or stamped_task_ids; the B2 scenario that
+verified Last Synced Hash clearing is retired with the field itself):
   A. Upload succeeds normally -> no rollback, no deletions.
-  B. Upload returns HTTP 423 twice -> WorkbookLockedError raised ->
-     rollback_locked_workbook deletes each posted ClickUp comment.
-  B2. Same as B but with stamped_task_ids -> rollback also clears the
-      'Last Synced Hash' custom field on each stamped task.
+  B. Upload returns HTTP 423 -> rollback_locked_workbook fires the
+     postponement notice without touching ClickUp.
   C. Upload path itself: repeated 423 raises WorkbookLockedError.
 
 All ClickUp / SharePoint API calls are monkey-patched so we don't need
@@ -24,7 +25,6 @@ import rebuild
 
 FAKE_POSTED = []      # (task_id, text, returned_comment_id)
 FAKE_DELETED = []     # comment_id
-FAKE_FIELD_WRITES = []  # (task_id, field_id, value)
 
 def fake_cu_post_comment(task_id, text):
     cid = f"c{len(FAKE_POSTED) + 1000}"
@@ -33,10 +33,6 @@ def fake_cu_post_comment(task_id, text):
 
 def fake_cu_delete_comment(comment_id):
     FAKE_DELETED.append(comment_id)
-    return True
-
-def fake_cu_set_field(task_id, field_id, value):
-    FAKE_FIELD_WRITES.append((task_id, field_id, value))
     return True
 
 def fake_send_error_email(subject, body):
@@ -63,7 +59,7 @@ def test_a_happy_path():
 
 
 # ---------------------------------------------------------------------------
-# Scenario B: SharePoint 423 — rollback should delete every posted comment
+# Scenario B: SharePoint 423 — rollback fires the postponement notice
 # ---------------------------------------------------------------------------
 
 def test_b_locked_rollback():
@@ -72,62 +68,27 @@ def test_b_locked_rollback():
 
     print("=== Scenario B: SharePoint locked, rollback fires ===")
 
-    # 1. Simulate 5 successful ClickUp posts this run.
-    posted_ids = [fake_cu_post_comment(f"task{i}", f"body{i}") for i in range(5)]
-    print(f"posted {len(posted_ids)} comments to ClickUp: {posted_ids}")
+    # Trigger the rollback path directly. Post-2026-08-25 it has no
+    # ClickUp side effects to reverse — it just sends the postponement
+    # email. We assert send_error_email was called and nothing else was.
+    email_calls = []
+    def capture_email(subject, body):
+        email_calls.append((subject, body))
+        fake_send_error_email(subject, body)
 
-    # 2. Trigger the rollback path directly.
     with patch.object(rebuild, "cu_delete_comment", side_effect=fake_cu_delete_comment), \
-         patch.object(rebuild, "cu_set_field", side_effect=fake_cu_set_field), \
-         patch.object(rebuild, "send_error_email", side_effect=fake_send_error_email):
+         patch.object(rebuild, "send_error_email", side_effect=capture_email):
         rebuild.rollback_locked_workbook(
-            posted_comment_ids=posted_ids,
-            context="comment-sync",
+            context="rebuild mode=nightly",
             error_detail="SharePoint upload rejected as HTTP 423 resourceLocked: {test}",
         )
 
-    print(f"deleted={FAKE_DELETED}")
-    assert FAKE_DELETED == posted_ids, "every posted comment should have been deleted"
-    assert FAKE_FIELD_WRITES == [], "no stamped_task_ids passed — no field writes expected"
-    print("✓ rollback deleted every posted comment (no stamps to clear)\n")
-
-
-# ---------------------------------------------------------------------------
-# Scenario B2: rollback with stamped_task_ids also clears Last Synced Hash
-# ---------------------------------------------------------------------------
-
-def test_b2_locked_rollback_clears_hash_stamps():
-    FAKE_POSTED.clear()
-    FAKE_DELETED.clear()
-    FAKE_FIELD_WRITES.clear()
-
-    print("=== Scenario B2: rollback clears Last Synced Hash stamps ===")
-
-    posted_ids = [fake_cu_post_comment(f"task{i}", f"body{i}") for i in range(3)]
-    stamped_task_ids = ["task_a", "task_b", "task_c", "task_d"]
-    print(f"posted {len(posted_ids)} comments and stamped {len(stamped_task_ids)} tasks")
-
-    with patch.object(rebuild, "cu_delete_comment", side_effect=fake_cu_delete_comment), \
-         patch.object(rebuild, "cu_set_field", side_effect=fake_cu_set_field), \
-         patch.object(rebuild, "send_error_email", side_effect=fake_send_error_email):
-        rebuild.rollback_locked_workbook(
-            posted_comment_ids=posted_ids,
-            context="rebuild mode=nightly",
-            error_detail="SharePoint upload rejected as HTTP 423 resourceLocked",
-            stamped_task_ids=stamped_task_ids,
-        )
-
-    print(f"deleted={FAKE_DELETED}")
-    print(f"field writes={FAKE_FIELD_WRITES}")
-    assert FAKE_DELETED == posted_ids, "every posted comment should have been deleted"
-    assert len(FAKE_FIELD_WRITES) == len(stamped_task_ids), (
-        f"expected {len(stamped_task_ids)} field clears, got {len(FAKE_FIELD_WRITES)}"
-    )
-    for (task_id, field_id, value), expected_tid in zip(FAKE_FIELD_WRITES, stamped_task_ids):
-        assert task_id == expected_tid, f"task {task_id} != expected {expected_tid}"
-        assert field_id == rebuild.CU_LAST_SYNCED_HASH_FIELD, f"wrong field id {field_id}"
-        assert value == "", f"expected empty string, got {value!r}"
-    print("✓ rollback cleared every stamped task's Last Synced Hash\n")
+    assert FAKE_DELETED == [], "post-2026-08-25 rollback does not delete comments"
+    assert len(email_calls) == 1, f"expected 1 email, got {len(email_calls)}"
+    subject, body = email_calls[0]
+    assert "postponed" in subject.lower(), f"unexpected subject: {subject!r}"
+    assert "workbook is currently open" in body.lower()
+    print("✓ rollback sent postponement email, no ClickUp side effects\n")
 
 
 # ---------------------------------------------------------------------------
@@ -169,6 +130,5 @@ def test_c_upload_raises_workbooklocked():
 if __name__ == "__main__":
     test_a_happy_path()
     test_b_locked_rollback()
-    test_b2_locked_rollback_clears_hash_stamps()
     test_c_upload_raises_workbooklocked()
     print("ALL SCENARIOS PASSED")

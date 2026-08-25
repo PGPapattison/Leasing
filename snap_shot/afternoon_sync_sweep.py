@@ -90,8 +90,13 @@ def scan_workbook(workbook_bytes: bytes, stale_hours: int):
     Each flagged entry has:
       pid, unit, comment (truncated), stamp_raw, reason, age_hours
     """
-    (_prop, _unit_notes, _mkt, rem_comments_by_prop_unit,
-     last_synced_by_prop_unit) = extract_ann_edits(workbook_bytes)
+    # Post-2026-08-25 col P retirement: extract_ann_edits returns a 4-tuple
+    # and `rem_comments_by_prop_unit` is always empty (col P is gone from the
+    # workbook schema). The sweep still runs so the 5 PM workflow doesn't
+    # need to be edited, but it will always report 0 flagged comments.
+    (_prop, _unit_notes, _mkt,
+     rem_comments_by_prop_unit) = extract_ann_edits(workbook_bytes)
+    last_synced_by_prop_unit = {}
 
     now = now_et()
     stale_cutoff = now - timedelta(hours=stale_hours)

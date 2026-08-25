@@ -2,6 +2,23 @@
 
 All notable changes to the Leasing automations repo. Newest at the top.
 
+## 2026-08-25 — Retire col P workflow: REMs move back to ClickUp
+
+- **Commit:** _(this commit)_
+- **File(s):** `snap_shot/rebuild.py`, `snap_shot/tests/test_lock_rollback.py`, `snap_shot/afternoon_sync_sweep.py` (patched to no-op for col P); deleted: `snap_shot/backfill_last_synced_hash.py`, `snap_shot/one_off_wire_orphans_2026_08_18.py`, `.github/workflows/snap-shot-poll.yml`, `.github/workflows/snap-shot-backfill-last-synced-hash.yml`, `.github/workflows/snap-shot-oneoff-wire-orphans-2026-08-18.yml`
+- **Author:** Alexis Pattison
+- **Skill:** `prudent-snap-shot-rebuild` v1.7 → v1.8 (bump in follow-up commit by main agent)
+
+**Why.** REMs were drifting between typing prospect updates in workbook col P (which auto-posts to ClickUp) and updating tasks directly in ClickUp. This split the Vacancy Pipeline in ClickUp — new prospects lived only in Excel, so pipeline structure decayed. Pulling REMs back to ClickUp-only for prospect work.
+
+**What changed.** Col P (REM ClickUp Comment) removed from workbook schema (COLS dict entry, header, row-write loop, styling, width). `sync_rem_comments_to_clickup` function and `comment-sync` CLI mode deleted. `CU_LAST_SYNCED_HASH_FIELD` constant and all field-read/write logic removed from `pull_lar_summaries`, rollback path, and callers. `extract_ann_edits` return tuple: 5 → 4 (dropped `last_synced_by_prop_unit`). `pull_lar_summaries` return tuple: 5 → 4 (dropped `last_synced_hash_by_task_id`). `check_rem_comment_floor` and `send_unposted_rem_email` deleted (obsolete once col P is gone). `rollback_locked_workbook` simplified — no longer takes `posted_comment_ids` or `stamped_task_ids`; only sends postponement notice. `snap-shot-poll.yml` workflow deleted. `snap-shot-backfill-last-synced-hash.yml` workflow deleted. `snap_shot/backfill_last_synced_hash.py` deleted. `snap_shot/one_off_wire_orphans_2026_08_18.py` deleted (imported deleted rebuild symbols). `snap-shot-oneoff-wire-orphans-2026-08-18.yml` workflow deleted with it. `afternoon_sync_sweep.py` patched to unpack the new 4-tuple and always report 0 flagged comments (workflow retained but effectively a no-op). `test_lock_rollback.py` updated — B2 scenario removed, B scenario asserts postponement email only.
+
+**What did not change.** Col N (Notes), col O (ClickUp Summary), col Q (Last Synced display timestamp). All property-level Ann edits (Broker Calls, Property Flags, Vacant Callouts, Ann's Commentary, Market Rent, TICAM) still round-trip via `extract_ann_edits`. Renewal Pipeline flow — Renewal col O stays as parent status + latest comment. AppFolio rent-roll pull. Nightly (`snap-shot-nightly.yml`), weekly (`snap-shot-weekly.yml`), and afternoon-sync-sweep workflows. Col O rendering — a Thursday change will upgrade Vacancy col O to show prospect subtasks; NOT in this commit.
+
+**Risk / rollback.** Risk: medium. Ann's Wed morning workbook has an empty col P between O and Q. Column visually present but blank (no header, no width setting, no writes). Documented in email to Ann sent 2026-08-25. Rollback: `git revert <sha>`. The `Last Synced Hash` ClickUp custom field will be deleted by main agent AFTER this commit lands. If a rollback is needed within 24h, recreate the field (loss: all historical hash values, which are meaningless post-migration anyway).
+
+**Verification.** After next nightly rebuild (Wed 4:17 AM ET): workbook col P is empty, col Q populated, no errors referencing `CU_LAST_SYNCED_HASH_FIELD`. Test: `pytest snap_shot/tests/` — all 11 tests pass. Test: `python3 -m py_compile snap_shot/rebuild.py` — succeeds.
+
 ## 2026-08-19 — Snap Shot: move REM-comment dedup state off col Q and onto a ClickUp custom field (L3)
 
 - **Commit:** _(this commit)_
