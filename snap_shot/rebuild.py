@@ -677,6 +677,29 @@ def cu_get_list(list_id):
     return r.json()
 
 
+def cu_get_task_comments(task_id):
+    """Return the list of comments on a task via `GET /task/{id}/comment`.
+    ClickUp returns them newest-first. Best-effort — logs and returns [] on
+    failure so callers can degrade gracefully."""
+    try:
+        r = http_request(
+            "GET", f"{CU_BASE}/task/{task_id}/comment",
+            context=f"ClickUp comments {task_id}",
+            headers=cu_headers(),
+        )
+        if r.status_code != 200:
+            LOG.warning(
+                f"ClickUp comments fetch failed for {task_id}: "
+                f"HTTP {r.status_code}: {r.text[:200]}"
+            )
+            return []
+        data = r.json() or {}
+        return data.get("comments", []) or []
+    except Exception as e:  # noqa: BLE001
+        LOG.warning(f"ClickUp comments fetch raised for {task_id}: {e}")
+        return []
+
+
 def _cu_field_value(task, field_id):
     """Return the raw `value` for a custom field on a ClickUp task, or None.
     ClickUp represents unset short_text as absence-of-value or empty string;
@@ -811,6 +834,339 @@ def pull_lar_summaries():
         task_ids_by_tenant_id,
         task_ids_by_prop_unit,
     )
+
+
+# ─── Vacancy Prospect Subtask Rollup (col O append) ──────────────────
+#
+# Each Vacancy Pipeline PARENT task represents one vacant unit and carries
+# PropertyId + Unit # custom fields. Its subtasks are individual prospects
+# (retail-leasing conversations) that move through a status pipeline
+# ("upcoming" → "prospects engaged" → "loi under review" → ... → done/closed).
+#
+# For each active prospect subtask we surface:
+#   • Prospect name (from the subtask title "Property | Unit: X | Prospect Y",
+#     or the raw title if the format doesn't match).
+#   • Current status (title-cased).
+#   • Most recent comment: a M/D date + up to 80 chars of text.
+#
+# The rollup is APPENDED to the ClickUp Summary column O (below whatever the
+# LAR summary pull produced), so REMs see "AI summary — then live prospect
+# updates" in one glance. Empty rollup → no append, so vacancies with zero
+# active prospects render identically to today.
+#
+# Hide-list: subtasks in a status matching any of these are ignored (dead or
+# won deals shouldn't clutter the live prospect list).
+VACANCY_PROSPECT_HIDE_STATUSES = frozenset(
+    s.lower()
+    for s in os.environ.get(
+        "SNAP_SHOT_VACANCY_PROSPECT_HIDE_STATUSES",
+        ",".join([
+            # Brief-specified generic names (kept for defensive matching if
+            # ClickUp statuses are ever renamed toward these labels).
+            "closed", "closed lost", "lost", "dead",
+            "lease executed", "lease-expansion executed",
+            "complete", "completed",
+            # Actual live status names on the Vacancy Pipeline list, verified
+            # via cu_get_list_statuses on 2026-09-08. Included verbatim so
+            # the hide-list matches without relying on the brief-side aliases.
+            "lease/expansion executed",
+            "dead/lost deal/completed",
+        ]),
+    ).split(",")
+    if s.strip()
+)
+
+# Max length (including ellipsis) for the comment tail on a rollup line.
+_VACANCY_PROSPECT_COMMENT_MAX = 80
+
+
+def _rehydrate_prop_unit_dict(raw):
+    """JSON snapshots can't key on tuples. Two accepted shapes:
+      1) {"pid|unit": value}  — preferred for snapshots we generate ourselves
+      2) [[pid, unit, value], ...]  — list-of-triples form
+    Return dict keyed on (pid_str, unit_str) tuples. Unknown shapes → {}.
+    """
+    if not raw:
+        return {}
+    out = {}
+    if isinstance(raw, dict):
+        for k, v in raw.items():
+            if "|" in k:
+                pid, unit = k.split("|", 1)
+                out[(pid, unit)] = v
+        return out
+    if isinstance(raw, list):
+        for item in raw:
+            if isinstance(item, (list, tuple)) and len(item) == 3:
+                pid, unit, val = item
+                out[(str(pid), str(unit))] = val
+        return out
+    return {}
+
+
+def _extract_prospect_name(subtask_name):
+    """Pull a clean prospect name out of a Vacancy Pipeline subtask title.
+
+    Preferred pattern (per Alexis 2026-09-08 brief):
+        "Property | Unit: X | Prospect: Prospect Name"
+        "Property | Unit: X | Prospect Name"
+
+    Rules:
+      • If the title contains " | Prospect: ", return the segment after it.
+      • Otherwise, if it contains at least one " | ", return the last segment.
+      • Otherwise, return the raw title verbatim (some subtasks are ad-hoc
+        like "FU with John on Restaurant LOI").
+
+    The returned string is stripped but preserves original casing so a
+    prospect named "REI" doesn't get title-cased to "Rei".
+    """
+    if not subtask_name:
+        return ""
+    s = str(subtask_name).strip()
+    if not s:
+        return ""
+    # Prefer explicit "| Prospect: <name>" delimiter (case-insensitive on
+    # the label, but preserve the name's casing).
+    lower = s.lower()
+    marker = " | prospect:"
+    idx = lower.find(marker)
+    if idx != -1:
+        tail = s[idx + len(marker):].strip()
+        if tail:
+            return tail
+    if " | " in s:
+        last = s.rsplit(" | ", 1)[-1].strip()
+        # If the last segment starts with "Unit" it's not a prospect name —
+        # fall through to the raw title.
+        if last and not last.lower().startswith("unit"):
+            return last
+    return s
+
+
+def _extract_status_title(subtask):
+    """Return the subtask's current status as a Title Case string, empty if
+    absent. ClickUp returns status objects as `{"status": "loi under review",
+    "color": "...", "type": "custom"}` — we key off the lowercase name.
+    """
+    st = subtask.get("status") or {}
+    if isinstance(st, dict):
+        name = st.get("status") or ""
+    else:
+        name = str(st)
+    name = str(name).strip()
+    if not name:
+        return ""
+    # Title-case each word but preserve slashes/hyphens ("lease/expansion
+    # executed" → "Lease/Expansion Executed"). str.title() alone mangles
+    # "loi" → "Loi" (fine) and "lease/expansion" → "Lease/Expansion" (fine).
+    return name.title()
+
+
+def _format_comment_tail(comments, tz):
+    """Given a ClickUp comment list (newest-first) and a timezone, return the
+    formatted tail string ``(M/D: "first 80 chars")`` for the most recent
+    comment, or "" if there are no comments with usable text.
+
+    Whitespace inside the comment is collapsed to single spaces so multi-line
+    ClickUp comments don't blow up the rollup line. Total tail is capped so
+    the visible comment text plus "…" is ≤ _VACANCY_PROSPECT_COMMENT_MAX.
+    """
+    if not comments:
+        return ""
+    latest = comments[0]  # ClickUp returns newest-first.
+    text = latest.get("comment_text") or latest.get("comment") or ""
+    if isinstance(text, list):
+        # Rich-text comments arrive as a list of segments — join their text.
+        parts = []
+        for seg in text:
+            if isinstance(seg, dict):
+                parts.append(str(seg.get("text") or ""))
+            else:
+                parts.append(str(seg))
+        text = "".join(parts)
+    text = str(text or "").strip()
+    # Collapse all whitespace runs to a single space.
+    text = " ".join(text.split())
+    if not text:
+        return ""
+    if len(text) > _VACANCY_PROSPECT_COMMENT_MAX:
+        text = text[: _VACANCY_PROSPECT_COMMENT_MAX - 1].rstrip() + "\u2026"
+    # Comment date: ClickUp returns unix ms as strings.
+    date_ms_raw = latest.get("date") or latest.get("date_created") or ""
+    try:
+        date_ms = int(date_ms_raw)
+        # Windows lacks %-m/%-d, but the rebuild runs on Linux (GitHub
+        # Actions ubuntu-latest) and locally on Alexis's MacBook. Both
+        # support %-m/%-d. Fall back gracefully if not.
+        dt = datetime.fromtimestamp(date_ms / 1000, tz=tz)
+        try:
+            date_str = dt.strftime("%-m/%-d")
+        except ValueError:
+            date_str = dt.strftime("%#m/%#d") if os.name == "nt" else f"{dt.month}/{dt.day}"
+    except (TypeError, ValueError):
+        date_str = ""
+    if date_str:
+        return f'({date_str}: "{text}")'
+    return f'("{text}")'
+
+
+def _sort_prospect_subtasks(subtasks):
+    """Sort a list of ClickUp subtask dicts by ``date_updated`` descending
+    (most-recently-touched first). Falls back to ``date_created`` then title
+    so the ordering is stable across runs.
+    """
+    def _key(t):
+        du = t.get("date_updated") or t.get("date_created") or "0"
+        try:
+            return -int(du)
+        except (TypeError, ValueError):
+            return 0
+    return sorted(subtasks, key=_key)
+
+
+def pull_vacancy_prospect_subtasks(tz=None):
+    """Return a dict keyed on ``(property_id_str, normalized_unit_str)`` of
+    lists of active prospect subtasks for that (property, unit). Each entry:
+
+        {
+            (pid, unit_norm): [
+                {
+                    "prospect":  "Pathway Autism Services",
+                    "status":    "Loi Under Review",
+                    "comment":   "(9/2: \"Sent lease v2\")",  # or ""
+                    "line":      "\u2022 Pathway Autism Services \u2014 Loi Under Review (9/2: \"Sent lease v2\")",
+                    "date_updated_ms": 1725320000000,
+                    "parent_task_id": "868m1h2rk",
+                    "subtask_id":     "868m1h35n",
+                },
+                ...
+            ]
+        }
+
+    Ordering inside each list is most-recently-updated first (see
+    ``_sort_prospect_subtasks``).
+
+    Hide-list statuses are dropped. Subtasks whose parent lacks a populated
+    PropertyId or Unit # are dropped (we have nowhere to attach them).
+
+    Non-fatal: fetch errors bubble up as an empty dict rather than aborting
+    the whole build — the caller wraps this in a try/except.
+    """
+    if tz is None:
+        tz = ET or zoneinfo.ZoneInfo("America/New_York")
+
+    # cu_get_list_tasks already passes subtasks=true, so a single call
+    # returns parents AND their children in one response.
+    tasks = cu_get_list_tasks(LAR_VACANCY_LIST_ID, include_closed="false")
+
+    # Index parent-carried PropertyId + Unit # so subtasks (which don't have
+    # their own values for these fields) can inherit them.
+    parent_prop_unit = {}
+    for t in tasks:
+        if t.get("parent"):
+            continue  # only true parents (top-level tasks) carry the fields
+        pid_raw = _cu_field_value(t, CU_PROPERTY_ID_FIELD)
+        unit_raw = _cu_field_value(t, CU_UNIT_NUMBER_FIELD)
+        pid = str(pid_raw).strip() if pid_raw is not None else ""
+        unit_norm = _norm_unit_label(unit_raw) if unit_raw is not None else ""
+        if pid and unit_norm:
+            parent_prop_unit[t.get("id")] = (pid, unit_norm)
+
+    # Gather + filter subtasks.
+    grouped = {}
+    total_seen = 0
+    total_hidden = 0
+    total_no_parent_key = 0
+    total_active = 0
+    for t in tasks:
+        parent_id = t.get("parent")
+        if not parent_id:
+            continue
+        total_seen += 1
+        # Status filter.
+        status_obj = t.get("status") or {}
+        status_name = (
+            status_obj.get("status") if isinstance(status_obj, dict) else str(status_obj)
+        ) or ""
+        if status_name.strip().lower() in VACANCY_PROSPECT_HIDE_STATUSES:
+            total_hidden += 1
+            continue
+        key = parent_prop_unit.get(parent_id)
+        if not key:
+            total_no_parent_key += 1
+            continue
+        total_active += 1
+        grouped.setdefault(key, []).append(t)
+
+    # For each grouped subtask, fetch comments (cheap: one GET per active
+    # subtask), format the rollup line, and stash.
+    out = {}
+    for key, subtasks in grouped.items():
+        sorted_subs = _sort_prospect_subtasks(subtasks)
+        rows = []
+        for st in sorted_subs:
+            prospect = _extract_prospect_name(st.get("name") or "")
+            status_title = _extract_status_title(st)
+            comments = cu_get_task_comments(st.get("id") or "")
+            tail = _format_comment_tail(comments, tz)
+            if tail:
+                line = f"\u2022 {prospect} \u2014 {status_title} {tail}"
+            else:
+                line = f"\u2022 {prospect} \u2014 {status_title}"
+            try:
+                date_updated_ms = int(st.get("date_updated") or 0)
+            except (TypeError, ValueError):
+                date_updated_ms = 0
+            rows.append({
+                "prospect": prospect,
+                "status": status_title,
+                "comment": tail,
+                "line": line,
+                "date_updated_ms": date_updated_ms,
+                "parent_task_id": st.get("parent") or "",
+                "subtask_id": st.get("id") or "",
+            })
+        out[key] = rows
+
+    LOG.info(
+        "Vacancy prospect subtasks: %d parents keyed, %d subtasks seen, "
+        "%d hidden (status), %d dropped (no parent key), %d active kept across "
+        "%d (property,unit) rollups.",
+        len(parent_prop_unit), total_seen, total_hidden, total_no_parent_key,
+        total_active, len(out),
+    )
+    return out
+
+
+def format_prospect_rollup_block(rows):
+    """Render the ``Prospects (N):`` block that gets appended to col O.
+    Returns "" when ``rows`` is empty so callers can skip the append entirely.
+
+    Accepts rows with either a pre-rendered ``"line"`` key (produced by the
+    live pull path) OR the raw component fields ``prospect_name``,
+    ``status_title``, and ``comment_tail`` (produced by the snapshot path,
+    which serializes through JSON and can't round-trip the pre-rendered
+    string cleanly because unit tests build rows the other way too). The
+    on-the-fly assembly here keeps both paths using the exact same wire
+    format.
+    """
+    if not rows:
+        return ""
+    header = f"Prospects ({len(rows)}):"
+    lines = []
+    for r in rows:
+        if "line" in r and r["line"]:
+            lines.append(r["line"])
+            continue
+        prospect = r.get("prospect_name") or r.get("prospect") or ""
+        status = r.get("status_title") or r.get("status") or ""
+        tail = r.get("comment_tail") or r.get("comment") or ""
+        line = f"\u2022 {prospect} \u2014 {status}"
+        if tail:
+            line = f"{line} {tail}"
+        lines.append(line)
+    body = "\n".join(lines)
+    return f"{header}\n{body}"
 
 
 # ─── TICAM Rates (2026) ───────────────────────────────────────────────
@@ -1996,6 +2352,7 @@ def build_workbook(mapping, rent_roll_by_property, property_overrides,
                     output_path, logo_path=None,
                     clickup_summaries_by_tenant=None,
                     clickup_summaries_by_prop_unit=None,
+                    vacancy_prospects_by_prop_unit=None,
                     ticam_by_property=None):
     """Build the Snap Shot workbook. `mapping` = property_mapping_all73.json
     contents. `rent_roll_by_property` = {appfolio_id_str: [unit_row, ...]}.
@@ -2017,6 +2374,7 @@ def build_workbook(mapping, rent_roll_by_property, property_overrides,
     """
     clickup_summaries_by_tenant = clickup_summaries_by_tenant or {}
     clickup_summaries_by_prop_unit = clickup_summaries_by_prop_unit or {}
+    vacancy_prospects_by_prop_unit = vacancy_prospects_by_prop_unit or {}
     rr = rent_roll_by_property
 
     wb = openpyxl.Workbook()
@@ -2240,6 +2598,7 @@ def build_workbook(mapping, rent_roll_by_property, property_overrides,
         m["_market_rent_overrides"] = market_rent_overrides.get(af_id, {})
         m["_clickup_summaries_by_tenant"] = clickup_summaries_by_tenant
         m["_clickup_summaries_by_prop_unit"] = clickup_summaries_by_prop_unit
+        m["_vacancy_prospects_by_prop_unit"] = vacancy_prospects_by_prop_unit
         # 2026 TICAM rates keyed by Snap Shot AppFolio display name (see
         # pull_ticam_rates_2026). None → no 2026 row on ClickUp → write_ticam_row
         # renders "2026 TICAM: not published".
@@ -2577,6 +2936,7 @@ def write_property_block(ws, start_row, name, address, units, mapping_entry):
     market_rent_overrides = mapping_entry.get("_market_rent_overrides") or {}
     clickup_summaries_by_tenant = mapping_entry.get("_clickup_summaries_by_tenant") or {}
     clickup_summaries_by_prop_unit = mapping_entry.get("_clickup_summaries_by_prop_unit") or {}
+    vacancy_prospects_by_prop_unit = mapping_entry.get("_vacancy_prospects_by_prop_unit") or {}
     prop_id_for_lookup = str(mapping_entry.get("appfolio_id") or "").strip()
     if not units:
         ws.row_dimensions[row].height = 18
@@ -2650,6 +3010,22 @@ def write_property_block(ws, start_row, name, address, units, mapping_entry):
                 clickup_summary = clickup_summaries_by_prop_unit.get(
                     (prop_id_for_lookup, _norm_unit_label(unit_label)), ""
                 )
+
+            # Vacancy Pipeline prospect subtask rollup (v1.9). Only applies
+            # to vacant units — occupied units read their summary via
+            # Tenant ID from the Renewal Pipeline and shouldn't accumulate
+            # a Vacancy-list prospect list. Zero active prospects → no
+            # append (col O renders identically to pre-v1.9).
+            if is_vacant and prop_id_for_lookup and unit_label:
+                prospect_rows = vacancy_prospects_by_prop_unit.get(
+                    (prop_id_for_lookup, _norm_unit_label(unit_label)), []
+                )
+                rollup_block = format_prospect_rollup_block(prospect_rows)
+                if rollup_block:
+                    if clickup_summary:
+                        clickup_summary = f"{clickup_summary}\n\n{rollup_block}"
+                    else:
+                        clickup_summary = rollup_block
 
             values = {
                 "Unit": unit_label,
@@ -2827,15 +3203,81 @@ def write_property_block(ws, start_row, name, address, units, mapping_entry):
 # ══════════════════════════════════════════════════════════════════════════
 
 
-def run_build(mode, dry_run, force_rebuild=False):
+def run_build(mode, dry_run, force_rebuild=False, local_out=None,
+              data_snapshot=None):
     """Executes steps 1-6 of the brief's script structure. Returns the local
     output file path. Raises FatalError on any unrecoverable problem.
 
     force_rebuild=True bypasses safety guards (currently just the race-condition
-    check). Propagated from the workflow input of the same name."""
+    check). Propagated from the workflow input of the same name.
+
+    local_out: absolute path to write the built .xlsx to. Implies dry-run
+    behavior (no SharePoint touch, no ClickUp description stamp, no email).
+
+    data_snapshot: absolute path to a JSON file with pre-pulled fixtures
+    (rent_roll_by_property, clickup_summaries_by_tenant,
+    clickup_summaries_by_prop_unit, vacancy_prospects_by_prop_unit,
+    property_overrides, unit_notes, market_rent_overrides, broker_map).
+    When set, ALL live API calls (AppFolio, ClickUp, SharePoint) are
+    skipped and the snapshot is used verbatim. Useful for local dry-runs
+    in environments where the API tokens aren't available or shouldn't
+    be exposed. Missing keys fall back to empty dicts.
+
+    NOTE: local_out + data_snapshot together produce a repeatable local
+    sample without needing any live credentials — that's how v1.9 was
+    validated before the branch was merged.
+    """
+
+    # If a data snapshot is provided we short-circuit all pulls and load
+    # fixtures from disk. This is a strictly read-only, no-network mode.
+    use_snapshot = bool(data_snapshot)
+    if use_snapshot:
+        LOG.info(f"data-snapshot mode: loading pre-pulled fixtures from {data_snapshot}")
+        dry_run = True  # snapshot mode implies no SharePoint touch
 
     mapping = load_json(MAPPING_PATH)
     broker_map = load_json(BROKER_CONTACTS_PATH, required=False, default={})
+
+    # ==================================================================
+    # Snapshot short-circuit branch — read all fixtures from disk, skip
+    # every live API. Kept as an early return to keep the live path below
+    # visually identical to what was shipped pre-v1.9.
+    # ==================================================================
+    if use_snapshot:
+        snap = load_json(data_snapshot)
+        rent_roll_by_property = snap.get("rent_roll_by_property") or {}
+        clickup_summaries_by_tenant = snap.get("clickup_summaries_by_tenant") or {}
+        # JSON can't key on tuples — accept either a list of
+        # [pid, unit, value] triples or a dict keyed on "pid|unit".
+        clickup_summaries_by_prop_unit = _rehydrate_prop_unit_dict(
+            snap.get("clickup_summaries_by_prop_unit") or {}
+        )
+        vacancy_prospects_by_prop_unit = _rehydrate_prop_unit_dict(
+            snap.get("vacancy_prospects_by_prop_unit") or {}
+        )
+        property_overrides = snap.get("property_overrides") or {}
+        unit_notes = snap.get("unit_notes") or {}
+        market_rent_overrides = snap.get("market_rent_overrides") or {}
+        broker_map = snap.get("broker_map") or broker_map
+        ticam_by_property = snap.get("ticam_by_property") or {}
+
+        output_path = local_out or os.path.join("/tmp", "Leasing-Snap-Shot-snapshot.xlsx")
+        build_workbook(
+            mapping=mapping,
+            rent_roll_by_property=rent_roll_by_property,
+            property_overrides=property_overrides,
+            unit_notes=unit_notes,
+            market_rent_overrides=market_rent_overrides,
+            broker_map=broker_map,
+            output_path=output_path,
+            logo_path=LOGO_PATH,
+            clickup_summaries_by_tenant=clickup_summaries_by_tenant,
+            clickup_summaries_by_prop_unit=clickup_summaries_by_prop_unit,
+            vacancy_prospects_by_prop_unit=vacancy_prospects_by_prop_unit,
+            ticam_by_property=ticam_by_property,
+        )
+        LOG.info(f"Snapshot build complete: {output_path}")
+        return output_path
 
     # Step 1: download current SharePoint workbook + race-condition check.
     if dry_run:
@@ -2895,6 +3337,19 @@ def run_build(mode, dry_run, force_rebuild=False):
         LOG.warning(f"LAR summaries pull failed — continuing with empty summaries: {e}")
         clickup_summaries_by_tenant, clickup_summaries_by_prop_unit = {}, {}
 
+    # Step 4c: pull Vacancy Pipeline prospect subtask rollup. Appended to
+    # col O below the AI Summary so REMs see live prospect activity next
+    # to each vacant unit. Non-fatal — an empty dict just means the col
+    # renders exactly like today (AI summary only).
+    try:
+        vacancy_prospects_by_prop_unit = pull_vacancy_prospect_subtasks()
+    except Exception as e:  # noqa: BLE001
+        LOG.warning(
+            f"Vacancy prospect subtask pull failed — col O will render "
+            f"without prospect rollup: {e}"
+        )
+        vacancy_prospects_by_prop_unit = {}
+
     # Step 4d: pull 2026 TICAM rates from ClickUp TICAM Rates list. Runs on
     # every mode. Non-fatal — failure returns {} and the TICAM row falls
     # back to "2026 TICAM: not published" everywhere. Keyed by Snap Shot
@@ -2906,8 +3361,11 @@ def run_build(mode, dry_run, force_rebuild=False):
     ticam_by_property = pull_ticam_rates_2026(snap_shot_prop_names)
 
     # Step 5: rebuild workbook.
-    output_filename = "Leasing-Snap-Shot-dryrun.xlsx" if dry_run else "Leasing-Snap-Shot.xlsx"
-    output_path = os.path.join(LOCAL_BUILD_DIR if not dry_run else "/tmp", output_filename)
+    if local_out:
+        output_path = local_out
+    else:
+        output_filename = "Leasing-Snap-Shot-dryrun.xlsx" if dry_run else "Leasing-Snap-Shot.xlsx"
+        output_path = os.path.join(LOCAL_BUILD_DIR if not dry_run else "/tmp", output_filename)
     build_workbook(
         mapping=mapping,
         rent_roll_by_property=rent_roll_by_property,
@@ -2919,6 +3377,7 @@ def run_build(mode, dry_run, force_rebuild=False):
         logo_path=LOGO_PATH,
         clickup_summaries_by_tenant=clickup_summaries_by_tenant,
         clickup_summaries_by_prop_unit=clickup_summaries_by_prop_unit,
+        vacancy_prospects_by_prop_unit=vacancy_prospects_by_prop_unit,
         ticam_by_property=ticam_by_property,
     )
 
@@ -3009,6 +3468,26 @@ def main():
             "SNAP_SHOT_FORCE_REBUILD for workflow_dispatch plumbing."
         ),
     )
+    parser.add_argument(
+        "--local-out", default=None,
+        help=(
+            "Absolute path to write the built .xlsx to. Implies dry-run "
+            "behavior (no SharePoint touch, no email). Useful for local "
+            "sample builds when validating a change before rollout."
+        ),
+    )
+    parser.add_argument(
+        "--data-snapshot", default=None,
+        help=(
+            "Path to a JSON snapshot with pre-pulled fixtures "
+            "(rent_roll_by_property, clickup_summaries_by_tenant, "
+            "clickup_summaries_by_prop_unit, vacancy_prospects_by_prop_unit, "
+            "property_overrides, unit_notes, market_rent_overrides, "
+            "broker_map, ticam_by_property). When set, ALL live API calls "
+            "are skipped and the snapshot is used verbatim. Requires "
+            "--mode=dry-run."
+        ),
+    )
     args = parser.parse_args()
 
     LOG.info(
@@ -3017,11 +3496,20 @@ def main():
     )
     dry_run = args.mode == "dry-run"
 
+    if args.data_snapshot and args.mode != "dry-run":
+        parser.error("--data-snapshot requires --mode=dry-run")
+
     try:
         if args.mode == "poll":
             rc = poll_and_maybe_rebuild(force_rebuild=args.force_rebuild)
         else:
-            output_path = run_build(mode=args.mode, dry_run=dry_run, force_rebuild=args.force_rebuild)
+            output_path = run_build(
+                mode=args.mode,
+                dry_run=dry_run,
+                force_rebuild=args.force_rebuild,
+                local_out=args.local_out,
+                data_snapshot=args.data_snapshot,
+            )
             if output_path is None:
                 LOG.info("skipped — Ann is editing")
                 rc = 0

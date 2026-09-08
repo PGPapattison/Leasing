@@ -2,6 +2,24 @@
 
 All notable changes to the Leasing automations repo. Newest at the top.
 
+## 2026-09-08 — Snap Shot: add vacancy prospect subtask rollup to col O (v1.9)
+
+- **Commit:** _(this commit)_
+- **File(s):** `snap_shot/rebuild.py`, `snap_shot/tests/test_vacancy_prospect_rollup.py` (new)
+- **Branch:** `col-o-vacancy-rollup` (NOT merged to main yet — review only)
+- **Author:** Alexis Pattison
+- **Skill:** `prudent-snap-shot-rebuild` v1.8 → v1.9
+
+**Why.** Follow-through on the 2026-08-25 col P retirement note that flagged col O for a follow-up Thursday change. REMs now edit prospect updates directly in ClickUp Vacancy Pipeline subtasks, but Ann's Snap Shot workbook only showed the parent Vacancy task's Summary field — so every open prospect on a vacant unit was invisible unless she clicked into ClickUp. This surfaces every open subtask directly in col O so she can run the leasing call from the workbook alone.
+
+**What changed.** New function `pull_vacancy_prospect_subtasks(tz)` in `snap_shot/rebuild.py` walks every Vacancy Pipeline task (list `901113575628`), indexes parents by (PropertyId, Unit#), groups subtasks by parent, filters out closed/executed statuses via the new `VACANCY_PROSPECT_HIDE_STATUSES` frozenset (both brief-supplied generic aliases and the actual live status names `lease/expansion executed` and `dead/lost deal/completed` — verified via `cu_get_list_statuses` on 2026-09-08), fetches the newest comment per subtask, and returns `{(pid, unit_norm): [row_dict, …]}`. `run_build()` now calls this pull. `build_workbook()` and `write_property_block()` accept a `vacancy_prospects_by_prop_unit` mapping. For vacant units only, `write_property_block` appends a `Prospects (N):` block to col O. Format: `• <Prospect Name> — <Status Title Case> (M/D: "first 80 chars of latest comment…")`, sorted most-recently-updated first; comment tail omitted entirely when a subtask has no comments. New helpers: `_extract_prospect_name`, `_extract_status_title`, `_format_comment_tail`, `_sort_prospect_subtasks`, `format_prospect_rollup_block`, `cu_get_task_comments`, `_rehydrate_prop_unit_dict`. New CLI flags: `--local-out=<path>` (write .xlsx locally instead of uploading to SharePoint) and `--data-snapshot=<path>` (load all fixtures from JSON and skip every live API call — both require `--mode=dry-run`). New test file `snap_shot/tests/test_vacancy_prospect_rollup.py` with 18 tests; full suite 29 pass.
+
+**What did not change.** Occupied units — they still get their Renewal Pipeline Summary keyed on Tenant ID and no rollup is appended. Renewal Pipeline list (`901113575567`), Docs Workflow list (`901113991446`). Col N (Notes), col P (blank gap), col Q (Last Synced). AppFolio rent-roll pull. Nightly / weekly / afternoon-sweep workflows — no schedule changes, no new workflow file. SharePoint upload path. Ann's edit-preservation flow. Race-condition skip on Ann-in-workbook. No emails or notifications from this run.
+
+**Risk / rollback.** Risk: low. The rollup only appends to col O; if `pull_vacancy_prospect_subtasks` raises the try/except in `run_build` swallows and logs the error, and the build proceeds with an empty rollup (col O still shows the parent's Summary). Rollback: `git revert <sha>` — the change is additive with no schema, workflow, or ClickUp field changes. No mutations to any ClickUp task or field.
+
+**Verification.** `python3 -m py_compile snap_shot/rebuild.py` — succeeds. `pytest snap_shot/tests/` — 29 tests pass (11 pre-existing + 18 new). Local dry-run against a real-data snapshot pulled via the ClickUp connector on 2026-09-08 (17 open subtasks matched to 13 vacant units across 10 properties) produced `/home/user/workspace/snap_shot_v1.9_sample.xlsx` with 8 populated `Prospects (N):` blocks in col O, including two-prospect rollups on Hampton Cove Shops Unit 322 C, Snow Street Village Suite 663, and Somerset Shoppes Unit 7798. **Not merged to main.** Branch `col-o-vacancy-rollup` pushed for review only. No production nightly triggered.
+
 ## 2026-08-25 — Retire col P workflow: REMs move back to ClickUp
 
 - **Commit:** _(this commit)_
